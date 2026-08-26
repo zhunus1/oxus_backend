@@ -1,11 +1,14 @@
 import { Controller, Get, Param, ParseIntPipe, Query, UseGuards } from "@nestjs/common";
 import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { JwtAuthGuard } from "src/modules/admin/auth/rbac/auth.guard";
+import { RolesGuard } from "src/modules/admin/auth/rbac/roles.guard";
+import { Roles } from "src/modules/admin/auth/rbac/roles.decorator";
 import { ExpertScheduleService } from "../service/expert-schedule.service";
 import { GetAvailableSlotsDto } from "./dto/get-available-slots.dto";
 
 @ApiTags("Expert Availability")
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles("SALES_MANAGER", "EXPERT", "ADMIN")
 @Controller("experts")
 export class ExpertAvailabilityController {
   constructor(private readonly expertScheduleService: ExpertScheduleService) {}

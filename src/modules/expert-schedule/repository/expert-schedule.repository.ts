@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "src/database/prisma.service";
-import { ConsultationStatus } from "generated/prisma/enums";
+import { ConsultationStatus, LeadExpertCallStatus } from "generated/prisma/enums";
 import { ExpertSchedule } from "generated/prisma/client";
 import { ExpertScheduleItemDto } from "../api/dto/expert-schedule-item.dto";
 
@@ -65,6 +65,19 @@ export class ExpertScheduleRepository {
         endTime: true,
         status: true,
       },
+    });
+  }
+
+  async findLeadCallsForExpertInRange(expertUserId: number, rangeStart: Date, rangeEnd: Date) {
+    return this.prisma.leadExpertCall.findMany({
+      where: {
+        expertUserId,
+        status: { in: [LeadExpertCallStatus.REQUESTED, LeadExpertCallStatus.CONFIRMED] },
+        startTime: { lt: rangeEnd },
+        endTime: { gt: rangeStart },
+      },
+      orderBy: { startTime: "asc" },
+      select: { id: true, startTime: true, endTime: true, status: true },
     });
   }
 

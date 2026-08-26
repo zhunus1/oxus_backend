@@ -295,6 +295,10 @@ export class ConsultationService {
     const localStart = this.getLocalDateParts(startTime, expertTimezone);
     const localEnd = this.getLocalDateParts(endTime, expertTimezone);
 
+    if (localStart.year !== localEnd.year || localStart.month !== localEnd.month || localStart.day !== localEnd.day) {
+      throw new BadRequestException("A consultation must start and end on the same local day");
+    }
+
     const daySchedule = await this.consultationRepo.findExpertScheduleByUserIdAndDay(consultantProfile.user.id, localStart.dayOfWeek);
 
     if (daySchedule.length === 0) {
@@ -307,13 +311,7 @@ export class ConsultationService {
       throw new BadRequestException("Requested time is outside expert schedule");
     }
 
-    const overlappingConsultation = await this.consultationRepo.findOverlappingConsultation(portrait.consultantProfileId, startTime, endTime);
-
-    if (overlappingConsultation) {
-      throw new BadRequestException("This time slot is already booked");
-    }
-
-    const consultation = await this.consultationRepo.create({
+    const consultation = await this.consultationRepo.createIfExpertAvailable({
       clientId: studentUserId,
       consultantId: portrait.consultantProfileId,
       startTime: dto.startTime,
@@ -322,10 +320,11 @@ export class ConsultationService {
       packageId: studentPackage?.id,
       studentId: studentUserId,
       expertId: portrait.consultantProfileId,
+      expertUserId: consultantProfile.user.id,
     });
 
-    if (studentPackage) {
-      await this.consultationRepo.incrementUsedSlots(studentPackage.id);
+    if (!consultation) {
+      throw new BadRequestException("This time slot is already booked");
     }
     await this.scheduleReminder(consultation);
 

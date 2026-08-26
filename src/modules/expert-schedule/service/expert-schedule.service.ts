@@ -8,6 +8,8 @@ import { AvailableSlotEntity } from "../api/dto/available-slot.entity";
 import { MEETING_BOOKING_MIN_LEAD_MS } from "src/common/constants/booking.constants";
 import { getLocalDateParts, incrementCalendarDay, localDateKey, rangesOverlap, zonedLocalToUtc } from "src/common/helpers/timezone";
 
+const MAX_AVAILABILITY_RANGE_DAYS = 62;
+
 @Injectable()
 export class ExpertScheduleService {
   private readonly logger = new Logger(ExpertScheduleService.name);
@@ -96,8 +98,15 @@ export class ExpertScheduleService {
       const from = new Date(dto.from);
       const to = new Date(dto.to);
 
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+        throw new BadRequestException("'from' and 'to' must be valid dates");
+      }
+
       if (from > to) {
         throw new BadRequestException("'from' must be less than or equal to 'to'");
+      }
+      if (to.getTime() - from.getTime() > MAX_AVAILABILITY_RANGE_DAYS * 24 * 60 * 60 * 1000) {
+        throw new BadRequestException(`Availability range cannot exceed ${MAX_AVAILABILITY_RANGE_DAYS} days`);
       }
 
       const consultantProfile = await this.repo.findConsultantProfileByUserId(expertUserId);
@@ -113,14 +122,19 @@ export class ExpertScheduleService {
       const expertTimezone = consultantProfile.user?.timezone ?? "Asia/Almaty";
       const now = new Date();
       const minBookableStart = new Date(now.getTime() + MEETING_BOOKING_MIN_LEAD_MS);
+      const rangeStart = getLocalDateParts(from, expertTimezone);
+      const rangeEnd = getLocalDateParts(to, expertTimezone);
+      const nextDayAfterRange = incrementCalendarDay(rangeEnd.year, rangeEnd.month, rangeEnd.day);
+      const bookingRangeStart = zonedLocalToUtc(rangeStart.year, rangeStart.month, rangeStart.day, 0, expertTimezone);
+      const bookingRangeEnd = zonedLocalToUtc(nextDayAfterRange.year, nextDayAfterRange.month, nextDayAfterRange.day, 0, expertTimezone);
 
-      const bookedConsultations = await this.repo.findConsultationsForExpertInRange(consultantProfile.id, from, to);
+      const [bookedConsultations, bookedLeadCalls] = await Promise.all([
+        this.repo.findConsultationsForExpertInRange(consultantProfile.id, bookingRangeStart, bookingRangeEnd),
+        this.repo.findLeadCallsForExpertInRange(expertUserId, bookingRangeStart, bookingRangeEnd),
+      ]);
 
       const result: AvailableSlotEntity[] = [];
       const seenDays = new Set<string>();
-
-      const rangeStart = getLocalDateParts(from, expertTimezone);
-      const rangeEnd = getLocalDateParts(to, expertTimezone);
 
       let year = rangeStart.year;
       let month = rangeStart.month;
@@ -144,7 +158,7 @@ export class ExpertScheduleService {
               continue;
             }
 
-            const isBooked = bookedConsultations.some(consultation => rangesOverlap(slotStart, slotEnd, consultation.startTime, consultation.endTime));
+            const isBooked = [...bookedConsultations, ...bookedLeadCalls].some(booking => rangesOverlap(slotStart, slotEnd, booking.startTime, booking.endTime));
 
             if (!isBooked) {
               result.push(

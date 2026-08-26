@@ -141,6 +141,27 @@ enum ContractStatus {
   PAID
 }
 
+enum LeadStatus {
+  NEW
+  CALL_SCHEDULED
+  RECALL
+  REJECTED
+}
+
+enum LeadCallbackStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum LeadExpertCallStatus {
+  REQUESTED
+  CONFIRMED
+  DECLINED
+  CANCELLED
+  COMPLETED
+}
+
 // ==========================================
 // 3. БАЗОВЫЕ МОДЕЛИ (ЯДРО)
 // ==========================================
@@ -149,7 +170,7 @@ model User {
 
   firstname   String
   lastname    String
-  email       String @unique
+  email       String  @unique
   phoneNumber String? @unique
   password    String
 
@@ -186,26 +207,32 @@ model User {
   requestedOrganisations       OrganisationRequest[]     @relation("OrganisationRequestRequester")
   reviewedOrganisationRequests OrganisationRequest[]     @relation("OrganisationRequestReviewer")
 
-  studentPackages   StudentPackage[] @relation("StudentPackagesStudent")
-  meetingsAsStudent Meeting[]        @relation("MeetingsStudent")
-  contactedLeads    Lead[]           @relation("LeadContactedBy")
-  studentContracts  Contract[]       @relation("StudentContracts")
-  signedContracts   Contract[]       @relation("ContractSignedBy")
-  journeyEvents     UserJourneyEvent[]
+  studentPackages    StudentPackage[]   @relation("StudentPackagesStudent")
+  meetingsAsStudent  Meeting[]          @relation("MeetingsStudent")
+  contactedLeads     Lead[]             @relation("LeadContactedBy")
+  assignedSalesLeads Lead[]             @relation("LeadAssignedSalesManager")
+  createdSalesLeads  Lead[]             @relation("LeadCreatedBy")
+  leadCallbacks      LeadCallback[]     @relation("LeadCallbackSalesManager")
+  leadCallsManaged   LeadExpertCall[]   @relation("LeadCallSalesManager")
+  leadCallsAsExpert  LeadExpertCall[]   @relation("LeadCallExpert")
+  leadActivities     LeadActivity[]     @relation("LeadActivityActor")
+  studentContracts   Contract[]         @relation("StudentContracts")
+  signedContracts    Contract[]         @relation("ContractSignedBy")
+  journeyEvents      UserJourneyEvent[]
 
   expertTasks  Task[]        @relation("ExpertTasks")
   studentTasks Task[]        @relation("StudentTasks")
   taskComments TaskComment[] @relation("TaskComments")
 
-  collabMeetingsCreated      CollabMeeting[]          @relation("CollabMeetingCreator")
-  collabMeetingInvites       CollabMeetingInvitee[]   @relation("CollabMeetingInviteeUser")
-  collabMeetingNotes         CollabMeetingNote[]      @relation("CollabMeetingNoteAuthor")
-  collabMeetingTodosCreated  CollabMeetingTodo[]      @relation("CollabMeetingTodoCreator")
-  collabMeetingTodosAssigned CollabMeetingTodo[]      @relation("CollabMeetingTodoAssignee")
+  collabMeetingsCreated      CollabMeeting[]        @relation("CollabMeetingCreator")
+  collabMeetingInvites       CollabMeetingInvitee[] @relation("CollabMeetingInviteeUser")
+  collabMeetingNotes         CollabMeetingNote[]    @relation("CollabMeetingNoteAuthor")
+  collabMeetingTodosCreated  CollabMeetingTodo[]    @relation("CollabMeetingTodoCreator")
+  collabMeetingTodosAssigned CollabMeetingTodo[]    @relation("CollabMeetingTodoAssignee")
 
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  deletedAt         DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   @@index([email])
   @@index([phoneNumber])
@@ -637,8 +664,9 @@ model Meeting {
   endTime   DateTime?
   status    MeetingStatus @default(SCHEDULED)
 
-  consultationId Int?          @unique
-  consultation   Consultation? @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultationId Int?            @unique
+  consultation   Consultation?   @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  leadExpertCall LeadExpertCall?
 
   student User?              @relation("MeetingsStudent", fields: [studentId], references: [id], onDelete: Cascade)
   expert  ConsultantProfile? @relation("MeetingsExpert", fields: [expertId], references: [id], onDelete: Cascade)
@@ -786,7 +814,15 @@ model NotificationLog {
   scheduledFor DateTime // Когда нужно отправить
   sentAt       DateTime? // Когда реально ушло
 
+  leadId   Int?
+  lead     Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  metadata Json?
+  readAt   DateTime?
+
   createdAt DateTime @default(now())
+
+  @@index([userId, channel, readAt, createdAt])
+  @@index([status, scheduledFor])
 }
 
 // ==========================================
@@ -974,15 +1010,15 @@ model Language {
 // 14. ДОГОВОРЫ (CONTRACTS)
 // ==========================================
 model Contract {
-  id             String         @id @default(uuid())
-  contractNumber String         @unique
+  id             String @id @default(uuid())
+  contractNumber String @unique
 
-  studentId      Int
-  student        User           @relation("StudentContracts", fields: [studentId], references: [id])
+  studentId Int
+  student   User @relation("StudentContracts", fields: [studentId], references: [id])
 
   // Expert/admin who signs on behalf of Oxus
   signedByUserId Int?
-  signedByUser   User?          @relation("ContractSignedBy", fields: [signedByUserId], references: [id])
+  signedByUser   User? @relation("ContractSignedBy", fields: [signedByUserId], references: [id])
 
   subscriptionTier SubscriptionTier
   price            Float
@@ -999,11 +1035,11 @@ model Contract {
   serviceStartDate DateTime?
   serviceEndDate   DateTime?
 
-  status           ContractStatus @default(PENDING_STUDENT)
+  status ContractStatus @default(PENDING_STUDENT)
 
-  studentSignedAt  DateTime?
-  expertSignedAt   DateTime?
-  paidAt           DateTime?
+  studentSignedAt DateTime?
+  expertSignedAt  DateTime?
+  paidAt          DateTime?
 
   // OTP (hashed, expiry — 5 min window)
   studentOtpHash   String?
@@ -1019,23 +1055,162 @@ model Contract {
 }
 
 // ==========================================
-// 15. ЛИДЫ (PRE-LOGIN CONTACT FORM)
+// 15. ЛИДЫ (PRE-LOGIN CONTACT FORM + SALES CRM)
 // ==========================================
+model LeadSource {
+  id       Int     @id @default(autoincrement())
+  code     String  @unique
+  name     String
+  isActive Boolean @default(true)
+
+  originLeads Lead[]           @relation("LeadOriginSource")
+  submissions LeadSubmission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Lead {
-  id                Int       @id @default(autoincrement())
-  firstName         String
-  lastName          String
-  phone             String
-  email             String
-  topic             String
-  interests         String
-  role              String // "student" | "parent" | "teacher" | "other"
-  preferredLanguage String // "en" | "ru" | "kk"
+  id                Int     @id @default(autoincrement())
+  displayName       String?
+  phoneNumber       String? @map("phone_number")
+  email             String?
+  role              String? // "student" | "parent" | "teacher" | "other"
+  preferredLanguage String? // "en" | "ru" | "kk"
+
+  status LeadStatus @default(NEW)
+
+  originSourceId Int        @default(1)
+  originSource   LeadSource @relation("LeadOriginSource", fields: [originSourceId], references: [id])
+
+  assignedSalesManagerId Int?
+  assignedSalesManager   User?     @relation("LeadAssignedSalesManager", fields: [assignedSalesManagerId], references: [id], onDelete: SetNull)
+  acceptedAt             DateTime?
+
+  createdByUserId Int?
+  createdByUser   User? @relation("LeadCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  submissions      LeadSubmission[]
+  callbacks        LeadCallback[]
+  expertCalls      LeadExpertCall[]
+  activities       LeadActivity[]
+  notificationLogs NotificationLog[]
+
+  // Legacy contact-form fields. The legacy DTO keeps these required for the old API.
+  firstName         String?
+  lastName          String?
+  topic             String?
+  interests         String?
   isContacted       Boolean   @default(false)
   contactedAt       DateTime?
   contactedByUserId Int?
   contactedByUser   User?     @relation("LeadContactedBy", fields: [contactedByUserId], references: [id], onDelete: SetNull)
   createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+  deletedAt         DateTime?
+
+  @@index([status, assignedSalesManagerId, createdAt])
+  @@index([phoneNumber])
+  @@index([originSourceId, createdAt])
+}
+
+model LeadSubmission {
+  id Int @id @default(autoincrement())
+
+  leadId Int
+  lead   Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  sourceId Int
+  source   LeadSource @relation(fields: [sourceId], references: [id])
+
+  externalSubmissionId String?
+  schemaVersion        String?
+  calculatorVersion    String?
+
+  rawPayload        Json
+  normalizedPayload Json?
+  metrics           Json?
+
+  submittedAt DateTime?
+  receivedAt  DateTime  @default(now())
+
+  @@unique([sourceId, externalSubmissionId])
+  @@index([leadId, receivedAt])
+  @@index([sourceId, receivedAt])
+}
+
+model LeadCallback {
+  id Int @id @default(autoincrement())
+
+  leadId Int
+  lead   Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  salesManagerId Int
+  salesManager   User @relation("LeadCallbackSalesManager", fields: [salesManagerId], references: [id])
+
+  scheduledFor DateTime
+  status       LeadCallbackStatus @default(SCHEDULED)
+  comment      String?
+
+  completedAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([salesManagerId, status, scheduledFor])
+  @@index([leadId, createdAt])
+}
+
+model LeadExpertCall {
+  id Int @id @default(autoincrement())
+
+  leadId Int
+  lead   Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  salesManagerId Int
+  salesManager   User @relation("LeadCallSalesManager", fields: [salesManagerId], references: [id])
+
+  expertUserId Int
+  expertUser   User @relation("LeadCallExpert", fields: [expertUserId], references: [id])
+
+  startTime DateTime
+  endTime   DateTime
+  comment   String?
+
+  status          LeadExpertCallStatus @default(REQUESTED)
+  responseComment String?
+  respondedAt     DateTime?
+
+  meetingId String?  @unique
+  meeting   Meeting? @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expertUserId, status, startTime])
+  @@index([salesManagerId, status, startTime])
+  @@index([leadId, createdAt])
+}
+
+model LeadActivity {
+  id Int @id @default(autoincrement())
+
+  leadId Int
+  lead   Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  actorUserId Int?
+  actorUser   User? @relation("LeadActivityActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  type     String
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([leadId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 enum TaskType {
@@ -1102,21 +1277,21 @@ model TaskComment {
 }
 
 model CollabMeeting {
-  id               String   @id @default(uuid())
-  roomName         String   @unique
+  id               String                 @id @default(uuid())
+  roomName         String                 @unique
   title            String
   startTime        DateTime
   endTime          DateTime
-  status           MeetingStatus @default(SCHEDULED)
-  isRecurring      Boolean  @default(false)
+  status           MeetingStatus          @default(SCHEDULED)
+  isRecurring      Boolean                @default(false)
   recurringGroupId String?
   createdById      Int
   createdBy        User                   @relation("CollabMeetingCreator", fields: [createdById], references: [id])
   invitees         CollabMeetingInvitee[]
   notes            CollabMeetingNote[]
   todos            CollabMeetingTodo[]
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 
   @@index([createdById])
   @@index([startTime])

@@ -9,6 +9,10 @@ jest.mock("generated/prisma/client", () => ({
     DONE: "DONE",
     CANCELLED: "CANCELLED",
   },
+  LeadExpertCallStatus: {
+    REQUESTED: "REQUESTED",
+    CONFIRMED: "CONFIRMED",
+  },
   MeetingStatus: { SCHEDULED: "SCHEDULED" },
 }));
 
@@ -22,11 +26,15 @@ type MeetingsRepositoryContract = ConsultationRepository & {
 
 describe("ConsultationRepository expert meeting lists", () => {
   const findMany = jest.fn();
+  const findFirst = jest.fn();
   const count = jest.fn();
   const prisma = {
     consultation: {
       findMany,
       count,
+    },
+    leadExpertCall: {
+      findFirst,
     },
   } as unknown as PrismaService;
 
@@ -77,5 +85,76 @@ describe("ConsultationRepository expert meeting lists", () => {
       }),
     );
     expect(result).toEqual({ data: pageRows, totalItems: 12 });
+  });
+
+  it("serializes reservations and refuses to create a consultation over a Sales call", async () => {
+    const transactionClient = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      consultation: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      leadExpertCall: {
+        findFirst: jest.fn().mockResolvedValue({ id: 6 }),
+      },
+      studentPackage: { update: jest.fn() },
+    };
+    const transactionalPrisma = {
+      $transaction: jest.fn().mockImplementation(async operation => operation(transactionClient)),
+    } as unknown as PrismaService;
+    const transactionalRepository = new ConsultationRepository(transactionalPrisma);
+
+    const result = await transactionalRepository.createIfExpertAvailable({
+      clientId: 7,
+      consultantId: 42,
+      expertUserId: 23,
+      startTime: "2026-09-01T10:00:00.000Z",
+      endTime: "2026-09-01T10:30:00.000Z",
+      status: ConsultationStatus.REQUESTED,
+    });
+
+    expect(transactionClient.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(transactionClient.leadExpertCall.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        expertUserId: 23,
+        status: { in: ["REQUESTED", "CONFIRMED"] },
+      }),
+    });
+    expect(result).toBeNull();
+    expect(transactionClient.consultation.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the consultation and consumes its package slot in one transaction", async () => {
+    const created = { id: 101 };
+    const transactionClient = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      consultation: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(created),
+      },
+      leadExpertCall: { findFirst: jest.fn().mockResolvedValue(null) },
+      studentPackage: { update: jest.fn().mockResolvedValue({ id: 9, usedSlots: 1 }) },
+    };
+    const transactionalPrisma = {
+      $transaction: jest.fn().mockImplementation(async operation => operation(transactionClient)),
+    } as unknown as PrismaService;
+    const transactionalRepository = new ConsultationRepository(transactionalPrisma);
+
+    await expect(
+      transactionalRepository.createIfExpertAvailable({
+        clientId: 7,
+        consultantId: 42,
+        expertUserId: 23,
+        packageId: 9,
+        startTime: "2026-09-01T10:00:00.000Z",
+        endTime: "2026-09-01T10:30:00.000Z",
+        status: ConsultationStatus.REQUESTED,
+      }),
+    ).resolves.toBe(created);
+
+    expect(transactionClient.studentPackage.update).toHaveBeenCalledWith({
+      where: { id: 9 },
+      data: { usedSlots: { increment: 1 } },
+    });
   });
 });

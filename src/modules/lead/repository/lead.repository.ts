@@ -1,17 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
-import { CreateLeadDto } from "../api/dto/create-lead.dto";
 import { LeadEntity } from "../api/dto/lead.entity";
+import { LEAD_SOURCE } from "../domain/lead.constants";
 
 @Injectable()
 export class LeadRepository extends BaseRepository {
-  async create(data: CreateLeadDto): Promise<LeadEntity> {
-    const lead = await this.prisma.lead.create({ data });
-    return new LeadEntity(lead);
-  }
-
   async findAll(): Promise<LeadEntity[]> {
     const leads = await this.prisma.lead.findMany({
+      where: { originSource: { code: LEAD_SOURCE.LEGACY_CONTACT_FORM }, deletedAt: null },
       orderBy: { createdAt: "desc" },
       include: {
         contactedByUser: {
@@ -22,9 +18,12 @@ export class LeadRepository extends BaseRepository {
     return leads.map(lead => new LeadEntity(lead));
   }
 
-  async markContacted(id: number, expertUserId: number): Promise<LeadEntity> {
+  async markContacted(id: number, expertUserId: number): Promise<LeadEntity | null> {
     // Toggle: if already contacted, unmark; otherwise mark
-    const existing = await this.prisma.lead.findUnique({ where: { id } });
+    const existing = await this.prisma.lead.findFirst({
+      where: { id, originSource: { code: LEAD_SOURCE.LEGACY_CONTACT_FORM }, deletedAt: null },
+    });
+    if (!existing) return null;
     const nowContacted = !existing?.isContacted;
     const lead = await this.prisma.lead.update({
       where: { id },

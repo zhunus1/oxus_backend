@@ -7,6 +7,7 @@ import { seedUsers } from "./users.seed";
 import { seedStudentPortrait } from "./student-portrait.seed";
 import { seedExpertMentorshipData } from "./expert.seed";
 import { seedProgramRequirements } from "./program-requirements.seed";
+import { seedLeadSources } from "./lead-sources.seed";
 async function seedDatabase() {
   try {
     await seedCountries();
@@ -14,6 +15,7 @@ async function seedDatabase() {
     await seedOrganisationsAndPrograms();
     await seedProgramRequirements();
     await seedRolesAndPermissions();
+    await seedLeadSources();
     await seedUsers();
     await seedTestsAndQuestions();
     await seedStudentPortrait();

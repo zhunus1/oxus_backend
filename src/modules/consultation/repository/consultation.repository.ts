@@ -1,10 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaService } from "src/database/prisma.service";
 import { CreateConsultationDto } from "../api/dto/create-consultation.dto";
-import { Consultation, ConsultationStatus, MeetingStatus, Prisma } from "generated/prisma/client";
+import { Consultation, ConsultationStatus, LeadExpertCallStatus, MeetingStatus, Prisma } from "generated/prisma/client";
 import { UpdateConsultationDto } from "../api/dto/update-consultation.dto";
 import { ConsultationQueryDto } from "../api/dto/consultation-query.dto";
 import { v4 as uuidv4 } from "uuid";
+import { lockExpertBookings } from "src/common/database/expert-booking-lock";
 
 const expertMeetingInclude = {
   client: {
@@ -36,19 +37,21 @@ const expertMeetingInclude = {
 export class ConsultationRepository {
   constructor(private prisma: PrismaService) {}
 
-  async create(
+  private createArgs(
     data: CreateConsultationDto & {
       packageId?: number;
       studentId?: number;
       expertId?: number;
     },
-  ): Promise<Consultation> {
-    return this.prisma.consultation.create({
+  ): Prisma.ConsultationCreateArgs {
+    const startTime = new Date(data.startTime);
+    const endTime = new Date(data.endTime);
+    return {
       data: {
         clientId: data.clientId,
         consultantProfileId: data.consultantId,
-        startTime: new Date(data.startTime),
-        endTime: new Date(data.endTime),
+        startTime,
+        endTime,
         status: data.status,
         meeting: {
           create: {
@@ -56,8 +59,8 @@ export class ConsultationRepository {
             packageId: data.packageId,
             studentId: data.studentId,
             expertId: data.expertId,
-            startTime: new Date(data.startTime),
-            endTime: new Date(data.endTime),
+            startTime,
+            endTime,
             status: MeetingStatus.SCHEDULED,
           },
         },
@@ -67,7 +70,17 @@ export class ConsultationRepository {
         consultant: true,
         meeting: true,
       },
-    });
+    };
+  }
+
+  async create(
+    data: CreateConsultationDto & {
+      packageId?: number;
+      studentId?: number;
+      expertId?: number;
+    },
+  ): Promise<Consultation> {
+    return this.prisma.consultation.create(this.createArgs(data));
   }
 
   async findStudentPackage(studentId: number, expertId: number) {
@@ -76,17 +89,6 @@ export class ConsultationRepository {
         studentId_expertId: {
           studentId,
           expertId,
-        },
-      },
-    });
-  }
-
-  async incrementUsedSlots(packageId: number) {
-    return this.prisma.studentPackage.update({
-      where: { id: packageId },
-      data: {
-        usedSlots: {
-          increment: 1,
         },
       },
     });
@@ -213,6 +215,53 @@ export class ConsultationRepository {
         consultant: true,
         meeting: true,
       },
+    });
+  }
+
+  async createIfExpertAvailable(
+    data: CreateConsultationDto & {
+      packageId?: number;
+      studentId?: number;
+      expertId?: number;
+      expertUserId: number;
+    },
+  ) {
+    return this.prisma.$transaction(async tx => {
+      await lockExpertBookings(tx, data.expertUserId);
+
+      const startTime = new Date(data.startTime);
+      const endTime = new Date(data.endTime);
+      const [consultation, leadCall] = await Promise.all([
+        tx.consultation.findFirst({
+          where: {
+            consultantProfileId: data.consultantId,
+            status: { not: ConsultationStatus.CANCELLED },
+            startTime: { lt: endTime },
+            endTime: { gt: startTime },
+          },
+        }),
+        tx.leadExpertCall.findFirst({
+          where: {
+            expertUserId: data.expertUserId,
+            status: { in: [LeadExpertCallStatus.REQUESTED, LeadExpertCallStatus.CONFIRMED] },
+            startTime: { lt: endTime },
+            endTime: { gt: startTime },
+          },
+        }),
+      ]);
+
+      if (consultation || leadCall) return null;
+
+      const created = await tx.consultation.create(this.createArgs(data));
+
+      if (data.packageId != null) {
+        await tx.studentPackage.update({
+          where: { id: data.packageId },
+          data: { usedSlots: { increment: 1 } },
+        });
+      }
+
+      return created;
     });
   }
 

@@ -13,6 +13,7 @@ x-backend-environment: &backend-environment
   APP_URL: http://localhost:4000
   FRONTEND_URL: http://localhost:3000
   EXPERT_DASHBOARD_URL: http://localhost:3001/collab-meetings
+  CORS_ORIGINS: http://localhost:3000,http://localhost:3001,http://localhost:3002
   DATABASE_URL: postgresql://postgres:local-postgres-password@db:5432/oxusedu
   REDIS_URL: redis://:local-redis-password@redis:6379
   REDIS_HOST: redis

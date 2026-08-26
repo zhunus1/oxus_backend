@@ -6,6 +6,8 @@ import { ValidationPipe } from "@nestjs/common";
 import * as dotenv from "dotenv";
 import { useContainer } from "class-validator";
 import cookieParser from "cookie-parser";
+import { RedisIoAdapter } from "./common/websocket/redis-io.adapter";
+import { validateCorsOrigin } from "./configs/cors-origin";
 
 dotenv.config();
 
@@ -13,24 +15,34 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
 
   app.setGlobalPrefix("api/v1");
 
-  if (process.env.NODE_ENV === "production" && !process.env.STAGING) {
+  const isStaging = process.env.STAGING?.trim().toLowerCase() === "true";
+  if (process.env.NODE_ENV === "production" && !isStaging) {
     app.useLogger(["fatal", "error"]);
   }
 
   app.enableCors({
-    origin: (origin, callback) => {
-      callback(null, origin);
-    },
+    origin: validateCorsOrigin,
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   });
 
   app.use(cookieParser());
+
+  if (process.env.REDIS_URL) {
+    try {
+      const redisIoAdapter = new RedisIoAdapter(app, process.env.REDIS_URL);
+      await redisIoAdapter.connectToRedis();
+      app.useWebSocketAdapter(redisIoAdapter);
+    } catch (error) {
+      console.warn(`Redis WebSocket adapter is unavailable; using the in-memory adapter: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

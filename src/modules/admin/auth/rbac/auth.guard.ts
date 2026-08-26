@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { JsonWebTokenError, JwtService } from "@nestjs/jwt";
 import { Reflector } from "@nestjs/core";
 import { IS_PUBLIC_KEY } from "./public.decorator";
@@ -41,31 +41,41 @@ export class JwtAuthGuard implements CanActivate {
 
       const userRow = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { deletedAt: true, role: { select: { code: true } } },
+        select: {
+          deletedAt: true,
+          role: {
+            select: {
+              code: true,
+              permissions: { select: { code: true } },
+            },
+          },
+        },
       });
       if (!userRow || userRow.deletedAt != null) {
         throw new UnauthorizedException("Account is disabled");
       }
 
       req.user = payload;
+      req.user.id = userId;
+      req.user.sub = userId;
       if (userRow.role?.code) {
         req.user.roleCode = userRow.role.code;
       }
 
-      const userPermissionCodes: string[] = [];
+      const userPermissionCodes = userRow.role?.permissions.map(permission => permission.code) ?? [];
 
       const permissions = this.reflector.getAllAndOverride<string[]>(PERMISSIONS_KEY, [context.getHandler(), context.getClass()]) || [];
       if (permissions.length >= 1) {
         const hasRequiredPermission: boolean = permissions.some(requiredPermission => userPermissionCodes.includes(requiredPermission));
 
         if (!hasRequiredPermission) {
-          throw new UnauthorizedException(`${permissions.toString()} permissions required`);
+          throw new ForbiddenException(`${permissions.toString()} permissions required`);
         }
       }
 
       return true;
     } catch (err: any) {
-      if (err instanceof UnauthorizedException) throw err;
+      if (err instanceof UnauthorizedException || err instanceof ForbiddenException) throw err;
       if (err instanceof JsonWebTokenError) throw new UnauthorizedException("Invalid or expired token");
       this.logger.error(err);
       throw new UnauthorizedException("Invalid or expired token");

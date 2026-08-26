@@ -112,3 +112,7 @@ On the server, copy `deployment/.env.example` to `deployment/.env`, replace ever
 The deploy script validates the Compose configuration, pulls images, applies Prisma migrations, starts the stack, and fails if the backend health endpoint does not become ready within three minutes. Host Nginx forwards `/api` to the backend and `/storage` to MinIO; `/` returns `503` until a frontend is deployed.
 
 See [`deployment/README.md`](deployment/README.md) for the first Test deployment, GHCR login, HTTPS setup, updates, and rollback procedure.
+
+## Sales Manager CRM
+
+The backend contract for landing-calculator ingestion, Sales Manager ownership, callbacks, expert calls, notifications, and realtime events is documented in [`docs/sales-manager-crm.md`](docs/sales-manager-crm.md).

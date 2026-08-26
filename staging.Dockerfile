@@ -28,7 +28,7 @@ WORKDIR /app
 
 EXPOSE 4000
 ENV PORT=4000
-ENV TZ=Asia/Aqtau
+ENV TZ=Asia/Almaty
 
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 --ingroup nodejs nodejs \

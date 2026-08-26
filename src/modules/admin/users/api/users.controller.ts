@@ -4,8 +4,11 @@ import { JwtAuthGuard } from "../../auth/rbac/auth.guard";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { UsersQueryDto } from "./dto/users-query.dto";
+import { RolesGuard } from "../../auth/rbac/roles.guard";
+import { Roles } from "../../auth/rbac/roles.decorator";
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles("ADMIN")
 @Controller("users")
 export class UsersController {
   constructor(private usersService: UsersService) {}

@@ -7,7 +7,8 @@ export function resolveUserIdFromJwtPayload(payload: JwtPayloadDto | Record<stri
   const p = payload as Record<string, unknown>;
   const raw = p["sub"] ?? p["id"];
   if (raw === undefined || raw === null) return null;
-  const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return null;
+  if (typeof raw === "string" && !/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) return null;
   return n;
 }

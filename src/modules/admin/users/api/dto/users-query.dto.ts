@@ -5,10 +5,10 @@ import messages from "src/configs/messages";
 import { Exists } from "src/common/validators/exists.validator";
 
 export class UsersQueryDto {
-  @ApiPropertyOptional({ enum: ["ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY", "AGENT"] })
+  @ApiPropertyOptional({ enum: ["ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY", "SALES_MANAGER", "AGENT"] })
   @IsOptional()
   @IsString()
-  @IsIn(["ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY", "AGENT"], { message: "Invalid role code" })
+  @IsIn(["ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY", "SALES_MANAGER", "AGENT"], { message: "Invalid role code" })
   roleCode?: string;
 
   @ApiPropertyOptional({ example: 1 })
