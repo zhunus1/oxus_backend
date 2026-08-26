@@ -96,11 +96,19 @@ yarn build
 
 ## Deployment
 
-Deployment configuration is stored in `deployment/`. Create `deployment/.env` from `deployment/.env.example`, add the real secrets outside Git, and deploy an explicit release:
+Deployment configuration is stored in `deployment/`. The current server stack is intentionally backend-only: backend, PostgreSQL, Redis, MinIO, Browserless, and a one-shot Prisma migrator. Frontend applications are deployed separately when their source repositories are available.
+
+Successful pushes to `main` publish two image tags to GitHub Container Registry:
+
+- `ghcr.io/zhunus1/oxus_backend:test` for the current Test release;
+- `ghcr.io/zhunus1/oxus_backend:sha-<commit>` for an immutable commit-specific release.
+
+On the server, copy `deployment/.env.example` to `deployment/.env`, replace every placeholder with server-specific values, add `deployment/jitsi-private-key.pk`, authenticate Docker to GHCR, and run:
 
 ```bash
-./deployment/deploy.sh staging
-./deployment/deploy.sh production
+./deployment/deploy.sh
 ```
 
-`staging` selects the `:staging` image tag. `production` selects `:latest`. The deploy script rejects missing or unknown release names.
+The deploy script validates the Compose configuration, pulls images, applies Prisma migrations, starts the stack, and fails if the backend health endpoint does not become ready within three minutes. Host Nginx forwards `/api` to the backend and `/storage` to MinIO; `/` returns `503` until a frontend is deployed.
+
+See [`deployment/README.md`](deployment/README.md) for the first Test deployment, GHCR login, HTTPS setup, updates, and rollback procedure.
