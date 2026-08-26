@@ -1,0 +1,1163 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// 2. ENUMS (СПРАВОЧНИКИ И СТАТУСЫ)
+// ==========================================
+enum OrgType {
+  SCHOOL
+  LYCEUM
+  COLLEGE
+  UNIVERSITY
+  COMPANY
+  OTHER
+}
+
+enum EducationLevel {
+  NONE
+  MIDDLE_SCHOOL
+  HIGH_SCHOOL
+  VOCATIONAL_COLLEGE
+  BACHELOR
+  MASTER
+  PHD
+}
+
+enum DegreeLevel {
+  BACHELOR
+  MASTER
+  PHD
+}
+
+enum ProcessStep {
+  DISCOVERY
+  UNI_SELECTION
+  DOC_PREPARATION
+  APPLYING
+  VISA_SUPPORT
+  ENROLLED
+  GAP_YEAR // Сценарий перепоступления/отказа
+}
+
+enum ApplicationStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  INTERVIEW_STAGE
+  ACCEPTED
+  REJECTED
+  WAITLISTED
+}
+
+enum ConsultationStatus {
+  REQUESTED
+  CONFIRMED
+  DONE
+  CANCELLED // Учет списания слотов при отмене < 12ч
+}
+
+enum DocumentStatus {
+  DRAFT // Загружен студентом
+  REVIEW // На проверке у эксперта
+  NEEDS_REVISION // Отправлен на доработку
+  APPROVED // Финальная версия, готова к подаче
+}
+
+enum RequirementType {
+  SOP
+  CV
+  PASSPORT
+  TRANSCRIPT
+  RECOMMENDATION_LETTER
+  PORTFOLIO
+  LANGUAGE_CERTIFICATE
+  OTHER
+}
+
+enum SubscriptionTier {
+  FREE // Прошел только квиз
+  AI_ROADMAP // $49
+  EXPERT_MENTORSHIP // $499
+  ENTERPRISE // VIP-сопровождение
+}
+
+enum QuestionType {
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  NUMERIC
+  TEXT
+  DATE
+  PHONE
+  EMAIL
+}
+
+enum AttemptStatus {
+  DRAFT
+  SUBMITTED
+  SCORED
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ImportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum QsImportJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  COMPLETED_WITH_ERRORS
+}
+
+enum OrganisationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  IMPORTING
+  COMPLETED
+  FAILED
+}
+
+enum ContractStatus {
+  PENDING_STUDENT
+  PENDING_EXPERT
+  SIGNED
+  PAID
+}
+
+// ==========================================
+// 3. БАЗОВЫЕ МОДЕЛИ (ЯДРО)
+// ==========================================
+model User {
+  id Int @id @default(autoincrement())
+
+  firstname   String
+  lastname    String
+  email       String @unique
+  phoneNumber String? @unique
+  password    String
+
+  roleId Int
+  role   Role @relation(fields: [roleId], references: [id])
+
+  // Юридический блок (Защита от судов)
+  hasAcceptedTerms Boolean   @default(false)
+  termsAcceptedAt  DateTime?
+
+  // Таймзона пользователя (критично для дедлайнов и звонков 8x8)
+  timezone String @default("Asia/Almaty")
+
+  countryId            Int?
+  citizenshipCountryId Int?
+  organisationId       Int?
+
+  country      Country?      @relation("UserResidence", fields: [countryId], references: [id])
+  citizenship  Country?      @relation("UserCitizenship", fields: [citizenshipCountryId], references: [id])
+  organisation Organisation? @relation("UserOrganisation", fields: [organisationId], references: [id])
+
+  // Отношения
+  portrait                     StudentPortrait?
+  consultantProfile            ConsultantProfile?
+  consultationsAsClient        Consultation[]            @relation("ClientConsultations")
+  messagesSent                 Message[]
+  auditLogs                    AuditLog[]
+  transactions                 Transaction[]
+  notificationLogs             NotificationLog[]
+  eventsSpoken                 Event[]                   @relation("EventSpeaker") // Выступления эксперта
+  expertSchedules              ExpertSchedule[]          @relation("ExpertSchedules")
+  initiatedImportJobs          OrganisationImportJob[]   @relation("OrganisationImportJobInitiator")
+  initiatedQsImportJobs        QsOrganisationImportJob[] @relation("QsOrganisationImportJobInitiator")
+  requestedOrganisations       OrganisationRequest[]     @relation("OrganisationRequestRequester")
+  reviewedOrganisationRequests OrganisationRequest[]     @relation("OrganisationRequestReviewer")
+
+  studentPackages   StudentPackage[] @relation("StudentPackagesStudent")
+  meetingsAsStudent Meeting[]        @relation("MeetingsStudent")
+  contactedLeads    Lead[]           @relation("LeadContactedBy")
+  studentContracts  Contract[]       @relation("StudentContracts")
+  signedContracts   Contract[]       @relation("ContractSignedBy")
+  journeyEvents     UserJourneyEvent[]
+
+  expertTasks  Task[]        @relation("ExpertTasks")
+  studentTasks Task[]        @relation("StudentTasks")
+  taskComments TaskComment[] @relation("TaskComments")
+
+  collabMeetingsCreated      CollabMeeting[]          @relation("CollabMeetingCreator")
+  collabMeetingInvites       CollabMeetingInvitee[]   @relation("CollabMeetingInviteeUser")
+  collabMeetingNotes         CollabMeetingNote[]      @relation("CollabMeetingNoteAuthor")
+  collabMeetingTodosCreated  CollabMeetingTodo[]      @relation("CollabMeetingTodoCreator")
+  collabMeetingTodosAssigned CollabMeetingTodo[]      @relation("CollabMeetingTodoAssignee")
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  deletedAt         DateTime?
+
+  @@index([email])
+  @@index([phoneNumber])
+}
+
+/// События пути студента (аналитика воронки / CRM)
+model UserJourneyEvent {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType String
+  eventData Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([eventType])
+}
+
+model Role {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique
+  code        String  @unique
+  description String?
+
+  users       User[]
+  permissions Permission[] @relation("PermissionToRole")
+
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+}
+
+model Permission {
+  id          Int     @id @default(autoincrement())
+  name        String
+  code        String  @unique
+  description String?
+  roles       Role[]  @relation("PermissionToRole")
+
+  deletedAt DateTime?
+}
+
+// Витрина Экспертов (Для пакета $490)
+model ConsultantProfile {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bio         String? // Описание опыта (например, "Выпускник TUM")
+  rating      Float   @default(5.0)
+  successRate Float? // % поступивших студентов
+  isActive    Boolean @default(true)
+
+  // Отношения
+  reviews               Review[]
+  expertCountries       Country[]         @relation("ConsultantCountries")
+  consultationsAsExpert Consultation[]    @relation("ExpertConsultations")
+  assignedStudents      StudentPortrait[] @relation("AssignedStudents")
+  studentPackages       StudentPackage[]  @relation("StudentPackagesExpert")
+  meetings              Meeting[]         @relation("MeetingsExpert")
+}
+
+model Country {
+  id      Int    @id @default(autoincrement())
+  isoCode String @unique
+
+  // Локализация
+  nameEn String?
+  nameRu String?
+  nameKk String?
+
+  residenceUsers     User[]                   @relation("UserResidence")
+  citizensUsers      User[]                   @relation("UserCitizenship")
+  organisations      Organisation[]
+  portraitTargets    StudentPortraitTargets[]
+  consultantProfiles ConsultantProfile[]      @relation("ConsultantCountries")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Справочник реальных учебных заведений (Защита от галлюцинаций ИИ)
+model Organisation {
+  id   Int     @id @default(autoincrement())
+  slug String  @unique
+  type OrgType @default(OTHER)
+
+  // Локализация названий
+  nameEn String?
+  nameRu String?
+  nameKk String?
+
+  // image of Organisation
+  image      String?
+  coverImage String?
+
+  websiteUrl          String?
+  qsRank              Int?
+  qsPreviousRank      Int?
+  qsRegion            String?
+  qsSize              String?
+  qsFocus             String?
+  qsResearch          String?
+  qsInstitutionStatus String?
+  qsOverallScore      Float?
+  qsRankingYear       Int?
+  qsImportedAt        DateTime?
+
+  countryId Int
+  country   Country @relation(fields: [countryId], references: [id])
+
+  users            User[]                  @relation("UserOrganisation")
+  programs         Program[]
+  targetPrograms   TargetProgram[] // Привязка заявок к реальным вузам
+  importJobs       OrganisationImportJob[]
+  resolvedRequests OrganisationRequest[]   @relation("OrganisationRequestResolvedOrganisation")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+}
+
+model ProgramRequirement {
+  id          Int             @id @default(autoincrement())
+  programId   Int
+  type        RequirementType
+  title       String
+  description String?
+  isRequired  Boolean         @default(true)
+  sortOrder   Int             @default(0)
+
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([programId, type, title])
+  @@index([programId, sortOrder])
+}
+
+model Program {
+  id             Int          @id @default(autoincrement())
+  organisationId Int
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+
+  name        String // Название программы (например, "Data Science")
+  degreeLevel DegreeLevel // Уровень образования (Бакалавриат, Магистратура и т.д.)
+  tuitionFee  Float? // Стоимость обучения в год (для фильтрации по бюджету)
+
+  // Требования для поступления
+  minGPA   Float? // Минимальный балл аттестата/диплома
+  minIELTS Float? // Минимальный балл по языку (IELTS)
+
+  // Дедлайны и шансы
+  applicationDeadline DateTime? // Дедлайн подачи документов
+  baseAcceptanceRate  Float? // Базовый шанс поступления (например, 85%)
+
+  requirements ProgramRequirement[] // Document Requirements for a program
+  // Векторное представление для RAG (если используете pgvector)
+  // embedding    Unsupported("vector(1536)")? 
+
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  targetPrograms TargetProgram[]
+
+  @@unique([organisationId, name, degreeLevel])
+  @@index([degreeLevel])
+  @@index([organisationId])
+}
+
+model OrganisationImportJob {
+  id Int @id @default(autoincrement())
+
+  organisationId Int
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  initiatedByUserId Int?
+  initiatedByUser   User? @relation("OrganisationImportJobInitiator", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+
+  status               ImportJobStatus @default(QUEUED)
+  searchQuery          String?
+  officialWebsiteUrl   String?
+  sourceUrl            String?
+  rawResult            Json?
+  importedProgramCount Int             @default(0)
+  createdProgramCount  Int             @default(0)
+  updatedProgramCount  Int             @default(0)
+  errorLog             String?
+  startedAt            DateTime?
+  finishedAt           DateTime?
+
+  snapshots OrganisationImportSnapshot[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organisationId, createdAt])
+  @@index([status])
+}
+
+model OrganisationImportSnapshot {
+  id Int @id @default(autoincrement())
+
+  importJobId Int
+  importJob   OrganisationImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  sourceUrl     String
+  pageTitle     String?
+  rawText       String?
+  extractedData Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([importJobId])
+}
+
+model QsOrganisationImportJob {
+  id Int @id @default(autoincrement())
+
+  initiatedByUserId Int?
+  initiatedByUser   User? @relation("QsOrganisationImportJobInitiator", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+
+  status       QsImportJobStatus @default(QUEUED)
+  fileName     String
+  rankingYear  Int?
+  totalRows    Int               @default(0)
+  createdCount Int               @default(0)
+  updatedCount Int               @default(0)
+  skippedCount Int               @default(0)
+  failedCount  Int               @default(0)
+  rawSummary   Json?
+  errorLog     String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model OrganisationRequest {
+  id Int @id @default(autoincrement())
+
+  requestedByUserId Int
+  requestedByUser   User @relation("OrganisationRequestRequester", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+
+  reviewedByUserId Int?
+  reviewedByUser   User? @relation("OrganisationRequestReviewer", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  resolvedOrganisationId Int?
+  resolvedOrganisation   Organisation? @relation("OrganisationRequestResolvedOrganisation", fields: [resolvedOrganisationId], references: [id], onDelete: SetNull)
+
+  universityName String
+  countryName    String?
+  notes          String?
+  status         OrganisationRequestStatus @default(PENDING)
+  reviewNote     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([requestedByUserId])
+}
+
+// ==========================================
+// 4. ПРОФИЛЬ СТУДЕНТА (ЦИФРОВОЙ ПАСПОРТ)
+// ==========================================
+model StudentPortrait {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  hasVisa        Boolean        @default(false)
+  birthDate      DateTime?
+  educationLevel EducationLevel @default(NONE)
+  major          String?
+  gpa            Float?
+  gpaScale       Float          @default(4.0)
+  budgetLimit    Float?
+  budgetCurrency String?        @default("USD")
+
+  // Бизнес-логика тарифов и лимитов
+  currentStep         ProcessStep      @default(DISCOVERY)
+  overallProgress     Int              @default(0)
+  subscription        SubscriptionTier @default(FREE)
+  consultationBalance Int              @default(0) // Лимит сессий (SLA)
+
+  // KYC и анти-фрод
+  isIdentityLocked Boolean @default(false) // Заморозка ФИО после первой оплаты
+  generationCount  Int     @default(0) // Ограничение бесплатных перегенераций плана
+
+  // Данные ИИ
+  meta               Json? // Сохранение ответов из AI-опросника и кастомных офлайн-форм
+  aiRoadmap          Json? // Сохраненный финальный сгенерированный План за $49
+  roadmapGeneratedAt DateTime?
+
+  // Назначенный эксперт (для пакета $490)
+  consultantProfileId Int?
+  assignedExpert      ConsultantProfile? @relation("AssignedStudents", fields: [consultantProfileId], references: [id])
+
+  // Офлайн-маркетинг (O2O)
+  sourceEventId Int? // Если студент пришел с QR-кода на выступлении
+  sourceEvent   Event? @relation("EventLeads", fields: [sourceEventId], references: [id])
+
+  languages       UserLanguages[]
+  tests           LanguageTest[]
+  targetPrograms  TargetProgram[]
+  targetCountries StudentPortraitTargets[]
+  documents       Document[]
+  chats           Chat[]
+  reviews         Review[]
+
+  updatedAt DateTime @updatedAt
+}
+
+model ExpertSchedule {
+  id          Int  @id @default(autoincrement())
+  expertId    Int
+  expert      User @relation("ExpertSchedules", fields: [expertId], references: [id], onDelete: Cascade)
+  dayOfWeek   Int
+  startMinute Int
+  endMinute   Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([expertId, dayOfWeek, startMinute])
+  @@unique([expertId, dayOfWeek, endMinute])
+}
+
+model LanguageTest {
+  id         Int       @id @default(autoincrement())
+  testType   String // IELTS, TOEFL, Duolingo
+  totalScore Float
+  reading    Float?
+  listening  Float?
+  writing    Float?
+  speaking   Float?
+  testDate   DateTime?
+
+  studentPortraitId Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 5. CRM И ТРЕКИНГ ЗАЯВОК (PIPELINE)
+// ==========================================
+model TargetProgram {
+  id                Int               @id @default(autoincrement())
+  programTitle      String // "BSc Computer Science"
+  deadline          DateTime? // Хранится строго в UTC!
+  intake            String // Семестр: "Fall 2026", "Spring 2027"
+  applicationStatus ApplicationStatus @default(NOT_STARTED)
+
+  // Связь со справочником (ИИ не выдумывает вузы)
+  organisationId Int
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+
+  studentPortraitId Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id], onDelete: Cascade)
+
+  documents Document[] // Эссе, привязанные к конкретному вузу
+
+  programId Int?
+  program   Program? @relation(fields: [programId], references: [id])
+
+  statusChangedAt DateTime? // Для SLA-сенсора: когда последний раз менялся статус
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ==========================================
+// 6. ДОКУМЕНТООБОРОТ (VERSION CONTROL)
+// ==========================================
+model Document {
+  id           Int             @id @default(autoincrement())
+  title        String // "Motivation Letter v2"
+  fileUrl      String // Ссылка на облако AWS S3 / DigitalOcean
+  documentType RequirementType
+  version      Int             @default(1)
+  status       DocumentStatus  @default(DRAFT)
+  feedback     String? // Комментарий эксперта
+
+  studentPortraitId Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id], onDelete: Cascade)
+
+  targetProgramId Int?
+  targetProgram   TargetProgram? @relation(fields: [targetProgramId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================
+// 7. СИСТЕМА ВСТРЕЧ И 8X8 (MEETING HUB)
+// ==========================================
+model Consultation {
+  id                  Int                @id @default(autoincrement())
+  clientId            Int
+  consultantProfileId Int
+  startTime           DateTime // Сохраняется в UTC
+  endTime             DateTime // Сохраняется в UTC
+  status              ConsultationStatus @default(REQUESTED)
+  notes               String? // Заметки эксперта
+
+  client     User              @relation("ClientConsultations", fields: [clientId], references: [id])
+  consultant ConsultantProfile @relation("ExpertConsultations", fields: [consultantProfileId], references: [id])
+  meeting    Meeting?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([consultantProfileId, status, startTime])
+}
+
+model Meeting {
+  id       String  @id @default(uuid()) // Безопасный ID
+  roomName String  @unique // Уникальная комната в self-hosted 8x8
+  hostJwt  String? // Токен для эксперта (с правами модератора)
+  guestJwt String? // Токен для студента (гость)
+
+  studentId Int?
+  expertId  Int?
+  packageId Int?
+
+  startTime DateTime?
+  endTime   DateTime?
+  status    MeetingStatus @default(SCHEDULED)
+
+  consultationId Int?          @unique
+  consultation   Consultation? @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
+  student User?              @relation("MeetingsStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  expert  ConsultantProfile? @relation("MeetingsExpert", fields: [expertId], references: [id], onDelete: Cascade)
+  package StudentPackage?    @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([studentId])
+  @@index([expertId])
+  @@index([packageId])
+  @@index([startTime, endTime])
+}
+
+model StudentPackage {
+  id         Int @id @default(autoincrement())
+  studentId  Int
+  expertId   Int
+  totalSlots Int
+  usedSlots  Int @default(0)
+
+  student User?              @relation("StudentPackagesStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  expert  ConsultantProfile? @relation("StudentPackagesExpert", fields: [expertId], references: [id], onDelete: Cascade)
+
+  meetings Meeting[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, expertId])
+  @@index([studentId])
+  @@index([expertId])
+}
+
+// ==========================================
+// 8. КОММУНИКАЦИИ (IN-APP MESSAGING)
+// ==========================================
+model Chat {
+  id                Int             @id @default(autoincrement())
+  studentPortraitId Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id], onDelete: Cascade)
+
+  messages  Message[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Message {
+  id      Int     @id @default(autoincrement())
+  content String
+  isRead  Boolean @default(false)
+
+  chatId Int
+  chat   Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  senderId Int
+  sender   User @relation(fields: [senderId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// 9. БИЛЛИНГ И БЕЗОПАСНОСТЬ (GOD MODE)
+// ==========================================
+model Transaction {
+  id     String @id @default(uuid())
+  userId Int
+  user   User   @relation(fields: [userId], references: [id])
+
+  amount           Float
+  currency         String           @default("USD")
+  status           String // SUCCESS, PENDING, FAILED
+  subscriptionTier SubscriptionTier
+  providerRef      String? // Stripe Session ID или Kaspi ID
+
+  promoCodeId Int?
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         Int    @id @default(autoincrement())
+  action     String // "STATUS_CHANGE", "DATA_FREEZE", "REFUND"
+  entityType String // "TargetProgram", "StudentPortrait"
+  entityId   Int
+  details    Json? // Логирование изменений { from: "IN_PROGRESS", to: "REJECTED" }
+
+  userId Int // Кто сделал действие (Админ, Студент или Эксперт)
+  user   User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// 10. МАРКЕТИНГ И ПРОМОКОДЫ
+// ==========================================
+model PromoCode {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique // Например, "SPRING2026"
+  discountPct Float? // Скидка в процентах
+  discountAbs Float? // Скидка в деньгах
+  maxUses     Int? // Лимит активаций
+  usedCount   Int       @default(0)
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+
+  transactions Transaction[]
+  events       Event[] // Привязка к офлайн-выступлениям
+
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// 11. ОТЗЫВЫ И РЕЙТИНГИ (QA)
+// ==========================================
+model Review {
+  id      Int     @id @default(autoincrement())
+  rating  Int // От 1 до 5
+  comment String?
+
+  studentPortraitId Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id])
+
+  consultantProfileId Int
+  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([studentPortraitId, consultantProfileId])
+}
+
+// ==========================================
+// 12. ОЧЕРЕДЬ УВЕДОМЛЕНИЙ (CRON JOBS)
+// ==========================================
+model NotificationLog {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  channel String // "WHATSAPP", "EMAIL", "IN_APP"
+  type    String // "DEADLINE_REMINDER", "MEETING_ALERT"
+  status  String // "PENDING", "SENT", "FAILED"
+  content String // Текст сообщения
+
+  scheduledFor DateTime // Когда нужно отправить
+  sentAt       DateTime? // Когда реально ушло
+
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// 13. МЕРОПРИЯТИЯ И ДИНАМИЧЕСКИЕ ФОРМЫ (O2O)
+// ==========================================
+model Event {
+  id        Int      @id @default(autoincrement())
+  title     String // "Презентация для 11 классов НИШ"
+  slug      String   @unique // Для генерации QR-кода: oxusedu.com/events/nish-2026
+  eventDate DateTime
+  location  String?
+  isActive  Boolean  @default(true)
+
+  testId Int?
+  test   Test? @relation(fields: [testId], references: [id])
+
+  // Привязка эксперта, который выступает
+  speakerId Int
+  speaker   User @relation("EventSpeaker", fields: [speakerId], references: [id])
+
+  // Раздача скидки зрителям
+  promoCodeId Int?
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id])
+
+  // Собранные лиды
+  leadsGenerated StudentPortrait[] @relation("EventLeads")
+
+  createdAt DateTime @default(now())
+}
+
+model Test {
+  id          Int     @id @default(autoincrement())
+  title       String
+  description String?
+  imageUrl    String?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  questions Question[]
+  segments  QuestionSegment[]
+  attempts  Attempt[]
+  events    Event[]
+
+  taskAssignments Task[] @relation("TaskTest")
+
+  @@index([title])
+}
+
+model QuestionSegment {
+  id     Int    @id @default(autoincrement())
+  testId Int
+  title  String
+
+  test      Test       @relation(fields: [testId], references: [id], onDelete: Cascade)
+  questions Question[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([testId, title])
+  @@index([testId])
+}
+
+model Question {
+  id          Int          @id @default(autoincrement())
+  testId      Int
+  order       Int
+  text        String
+  description String?
+  type        QuestionType @default(SINGLE_CHOICE)
+
+  segmentId Int?
+  segment   QuestionSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+
+  options  QuestionOption[]
+  required Boolean          @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  test      Test       @relation(fields: [testId], references: [id], onDelete: Restrict)
+  responses Response[]
+
+  @@unique([testId, order])
+}
+
+model QuestionOption {
+  id         Int     @id @default(autoincrement())
+  order      Int
+  text       String
+  label      String?
+  questionId Int
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  responses Response[]
+
+  @@unique([questionId, order])
+}
+
+model Attempt {
+  id String @id @default(uuid())
+
+  testId Int
+  test   Test @relation(fields: [testId], references: [id], onDelete: Restrict)
+
+  userId Int?
+
+  status AttemptStatus @default(DRAFT)
+
+  responses Response[]
+
+  task Task? @relation("TaskAttempt")
+
+  startedAt   DateTime  @default(now())
+  submittedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([testId, status])
+  @@index([testId, createdAt])
+}
+
+model Response {
+  id            Int      @id @default(autoincrement())
+  attemptId     String
+  questionId    Int
+  valueText     String?
+  valueNum      Decimal? @db.Decimal(18, 6)
+  valueOptionId Int?
+
+  attempt  Attempt         @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  question Question        @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  option   QuestionOption? @relation(fields: [valueOptionId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@unique([attemptId, questionId])
+  @@index([questionId])
+  @@index([attemptId])
+}
+
+// ==========================================
+// СВЯЗИ MANY-TO-MANY (ТАБЛИЦЫ СОЕДИНЕНИЯ)
+// ==========================================
+model StudentPortraitTargets {
+  studentPortraitId Int
+  countryId         Int
+  studentPortrait   StudentPortrait @relation(fields: [studentPortraitId], references: [id], onDelete: Cascade)
+  country           Country         @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@id([studentPortraitId, countryId])
+}
+
+model UserLanguages {
+  id    Int    @id @default(autoincrement())
+  level String // "A1", "B2", "C1"
+
+  portraitId Int
+  languageId Int
+
+  portrait StudentPortrait @relation(fields: [portraitId], references: [id], onDelete: Cascade)
+  language Language        @relation(fields: [languageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([portraitId, languageId])
+}
+
+model Language {
+  id        Int             @id @default(autoincrement())
+  code      String          @unique
+  name      String          @unique
+  users     UserLanguages[]
+  createdAt DateTime        @default(now())
+}
+
+// ==========================================
+// 14. ДОГОВОРЫ (CONTRACTS)
+// ==========================================
+model Contract {
+  id             String         @id @default(uuid())
+  contractNumber String         @unique
+
+  studentId      Int
+  student        User           @relation("StudentContracts", fields: [studentId], references: [id])
+
+  // Expert/admin who signs on behalf of Oxus
+  signedByUserId Int?
+  signedByUser   User?          @relation("ContractSignedBy", fields: [signedByUserId], references: [id])
+
+  subscriptionTier SubscriptionTier
+  price            Float
+  currency         String           @default("KZT")
+
+  // Client details filled during student signing
+  clientFullName String?
+  studentName    String?
+  clientIin      String?
+  clientAddress  String?
+  clientPhone    String?
+
+  // Expert-editable fields
+  serviceStartDate DateTime?
+  serviceEndDate   DateTime?
+
+  status           ContractStatus @default(PENDING_STUDENT)
+
+  studentSignedAt  DateTime?
+  expertSignedAt   DateTime?
+  paidAt           DateTime?
+
+  // OTP (hashed, expiry — 5 min window)
+  studentOtpHash   String?
+  studentOtpExpiry DateTime?
+  expertOtpHash    String?
+  expertOtpExpiry  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([studentId])
+  @@index([status])
+}
+
+// ==========================================
+// 15. ЛИДЫ (PRE-LOGIN CONTACT FORM)
+// ==========================================
+model Lead {
+  id                Int       @id @default(autoincrement())
+  firstName         String
+  lastName          String
+  phone             String
+  email             String
+  topic             String
+  interests         String
+  role              String // "student" | "parent" | "teacher" | "other"
+  preferredLanguage String // "en" | "ru" | "kk"
+  isContacted       Boolean   @default(false)
+  contactedAt       DateTime?
+  contactedByUserId Int?
+  contactedByUser   User?     @relation("LeadContactedBy", fields: [contactedByUserId], references: [id], onDelete: SetNull)
+  createdAt         DateTime  @default(now())
+}
+
+enum TaskType {
+  TEST
+  FILE_UPLOAD
+  TEXT_ANSWER
+}
+
+enum TaskStatus {
+  PENDING // Ожидает выполнения
+  IN_PROGRESS // В процессе
+  COMPLETED // Сдано на проверку
+}
+
+/// Задача, назначенная экспертом студенту
+model Task {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String
+  type        TaskType
+
+  testId Int?
+  test   Test? @relation("TaskTest", fields: [testId], references: [id])
+
+  expertId Int
+  expert   User @relation("ExpertTasks", fields: [expertId], references: [id])
+
+  studentId Int
+  student   User @relation("StudentTasks", fields: [studentId], references: [id], onDelete: Cascade)
+
+  fileUrl    String?
+  textAnswer String?
+
+  testAttemptId String?  @unique
+  testAttempt   Attempt? @relation("TaskAttempt", fields: [testAttemptId], references: [id])
+
+  status      TaskStatus @default(PENDING)
+  completedAt DateTime?
+  deadline    DateTime
+
+  comments TaskComment[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([studentId, status])
+  @@index([expertId])
+}
+
+/// Комментарий к задаче (двусторонний — студент и эксперт)
+model TaskComment {
+  id       Int    @id @default(autoincrement())
+  taskId   Int
+  task     Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId Int
+  author   User   @relation("TaskComments", fields: [authorId], references: [id])
+  body     String
+
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  @@index([taskId])
+}
+
+model CollabMeeting {
+  id               String   @id @default(uuid())
+  roomName         String   @unique
+  title            String
+  startTime        DateTime
+  endTime          DateTime
+  status           MeetingStatus @default(SCHEDULED)
+  isRecurring      Boolean  @default(false)
+  recurringGroupId String?
+  createdById      Int
+  createdBy        User                   @relation("CollabMeetingCreator", fields: [createdById], references: [id])
+  invitees         CollabMeetingInvitee[]
+  notes            CollabMeetingNote[]
+  todos            CollabMeetingTodo[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([createdById])
+  @@index([startTime])
+  @@index([recurringGroupId])
+}
+
+model CollabMeetingInvitee {
+  id              Int           @id @default(autoincrement())
+  collabMeetingId String
+  meeting         CollabMeeting @relation(fields: [collabMeetingId], references: [id], onDelete: Cascade)
+  userId          Int
+  user            User          @relation("CollabMeetingInviteeUser", fields: [userId], references: [id])
+
+  @@unique([collabMeetingId, userId])
+  @@index([userId])
+}
+
+model CollabMeetingNote {
+  id              Int           @id @default(autoincrement())
+  collabMeetingId String
+  meeting         CollabMeeting @relation(fields: [collabMeetingId], references: [id], onDelete: Cascade)
+  authorId        Int
+  author          User          @relation("CollabMeetingNoteAuthor", fields: [authorId], references: [id])
+  content         String        @db.Text
+  updatedAt       DateTime      @updatedAt
+  createdAt       DateTime      @default(now())
+
+  @@unique([collabMeetingId, authorId])
+}
+
+model CollabMeetingTodo {
+  id              Int           @id @default(autoincrement())
+  collabMeetingId String
+  meeting         CollabMeeting @relation(fields: [collabMeetingId], references: [id], onDelete: Cascade)
+  createdById     Int
+  createdBy       User          @relation("CollabMeetingTodoCreator", fields: [createdById], references: [id])
+  assigneeId      Int?
+  assignee        User?         @relation("CollabMeetingTodoAssignee", fields: [assigneeId], references: [id])
+  text            String
+  completed       Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  @@index([collabMeetingId])
+}

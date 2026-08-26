@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Lead" ALTER COLUMN "email" DROP DEFAULT,
+ALTER COLUMN "topic" DROP DEFAULT;

@@ -1,0 +1,177 @@
+# Local-development stack only. It uses safe local credentials and hot reload.
+# Test and Production servers use deployment/compose.yaml instead.
+name: oxus_backend
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: dev.Dockerfile
+
+x-backend-environment: &backend-environment
+  NODE_ENV: development
+  PORT: "4000"
+  TZ: Asia/Almaty
+  APP_URL: http://localhost:4000
+  FRONTEND_URL: http://localhost:3000
+  EXPERT_DASHBOARD_URL: http://localhost:3001/collab-meetings
+  DATABASE_URL: postgresql://postgres:local-postgres-password@db:5432/oxusedu
+  REDIS_URL: redis://:local-redis-password@redis:6379
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: local-redis-password
+  JWT_SECRET: local-development-access-token-secret-change-outside-local-docker
+  JWT_REFRESH_SECRET: local-development-refresh-token-secret-change-outside-local-docker
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local-minio
+  AWS_SECRET_ACCESS_KEY: local-minio-password
+  AWS_BUCKET_NAME: uploads
+  AWS_MINIO_ENDPOINT: http://minio:9000
+  AWS_MINIO_PUBLIC_URL: http://localhost:9000
+  CHROME_WS_URL: ws://chrome:3000
+  JITSI_PRIVATE_KEY_PATH: /run/secrets/jitsi-private-key.pk
+  JITSI_APP_ID: local-jitsi-app
+  JAAS_API_KEY_ID: local-jitsi-key
+  JITSI_DOMAIN: 8x8.vc
+  SMTP_SERVER: ""
+  SMTP_PORT: "587"
+  SMTP_SECURE: "false"
+  SENDER_EMAIL: no-reply@localhost
+  SENDER_PASSWORD: ""
+  TWILIO_ACCOUNT_SID: ""
+  TWILIO_AUTH_TOKEN: ""
+  TWILIO_WHATSAPP_FROM: ""
+  TWILIO_SMS_FROM: ""
+  OPENAI_API_KEY: ""
+  GEMINI_API_KEY: ""
+  FREEDOM_API_URL: ""
+  FREEDOM_MERCHANT_ID: ""
+  FREEDOM_RECEIVE_SECRET_KEY: ""
+  FREEDOM_PAYMENT_SECRET_KEY: ""
+  FREEDOM_RESULT_URL: http://localhost:4000/api/v1/billing/result
+  FREEDOM_FAILURE_URL: http://localhost:3000/payment/failure
+  FREEDOM_SUCCESS_URL: http://localhost:3000/payment/success
+
+services:
+  backend:
+    build: *backend-build
+    image: oxus_backend:local
+    init: true
+    command: ["sh", "-c", "yarn install --immutable && yarn prisma generate && yarn start:dev"]
+    environment: *backend-environment
+    ports:
+      - "127.0.0.1:${LOCAL_BACKEND_PORT:-4000}:4000"
+    volumes:
+      - .:/app
+      - backend_node_modules:/app/node_modules
+      - backend_generated:/app/generated
+      - jitsi_keys:/run/secrets:ro
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      chrome:
+        condition: service_started
+      jitsi-keygen:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  migrator:
+    build: *backend-build
+    image: oxus_backend:local
+    command: ["yarn", "prisma", "migrate", "deploy"]
+    environment: *backend-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  jitsi-keygen:
+    build: *backend-build
+    image: oxus_backend:local
+    command:
+      - sh
+      - -c
+      - |
+        if [ ! -s /run/secrets/jitsi-private-key.pk ]; then
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /run/secrets/jitsi-private-key.pk
+          chown 1000:1000 /run/secrets/jitsi-private-key.pk
+          chmod 600 /run/secrets/jitsi-private-key.pk
+        fi
+    user: "0:0"
+    volumes:
+      - jitsi_keys:/run/secrets
+    restart: "no"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: oxusedu
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local-postgres-password
+    ports:
+      - "127.0.0.1:${LOCAL_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - academic_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oxusedu"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--requirepass", "local-redis-password"]
+    ports:
+      - "127.0.0.1:${LOCAL_REDIS_PORT:-56379}:6379"
+    volumes:
+      - academic_redisdata:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "local-redis-password", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z
+    command: server /data --console-address ":9090"
+    environment:
+      MINIO_ROOT_USER: local-minio
+      MINIO_ROOT_PASSWORD: local-minio-password
+    ports:
+      - "127.0.0.1:${LOCAL_MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${LOCAL_MINIO_CONSOLE_PORT:-9090}:9090"
+    volumes:
+      - academic_minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "alias", "set", "local", "http://localhost:9000", "local-minio", "local-minio-password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  chrome:
+    image: browserless/chrome:latest
+    environment:
+      CONNECTION_TIMEOUT: "60000"
+      MAX_CONCURRENT_SESSIONS: "10"
+    ports:
+      - "127.0.0.1:${LOCAL_CHROME_PORT:-3003}:3000"
+    restart: unless-stopped
+
+volumes:
+  academic_data:
+  academic_redisdata:
+  academic_minio_data:
+  backend_node_modules:
+  backend_generated:
+  jitsi_keys:

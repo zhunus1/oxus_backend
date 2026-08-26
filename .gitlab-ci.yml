@@ -1,0 +1,88 @@
+variables:
+  STAGING_BRANCH: "staging"
+  PROD_BRANCH: "main"
+  APP: "oxusedu-backend"
+  DOCKER_CONFIG: "$CI_PROJECT_DIR/.config"
+
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  image: node:22-bookworm-slim
+  before_script:
+    - corepack enable
+  script:
+    - yarn install --immutable
+    - yarn lint
+    - yarn test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+build_staging:
+  stage: build
+  image: docker:24.0.5-cli
+  services:
+    - docker:24.0.5-dind
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:staging
+  before_script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+  script:
+    - docker build -f staging.Dockerfile -t $IMAGE_TAG ./
+    - docker push $IMAGE_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == $STAGING_BRANCH
+
+build_production:
+  stage: build
+  image: docker:24.0.5-cli
+  services:
+    - docker:24.0.5-dind
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:latest
+  before_script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+  script:
+    - docker build -t $IMAGE_TAG ./
+    - docker push $IMAGE_TAG
+  rules:
+    - if: $CI_COMMIT_BRANCH == $PROD_BRANCH
+
+deploy_staging:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $SSH_SERVER >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    - chmod 600 $SSH_KEY
+  script:
+    - ssh -i $SSH_KEY $SSH_USER@$SSH_SERVER \
+      "echo $CI_DEPLOY_PASSWORD | docker login $CI_REGISTRY -u $CI_DEPLOY_USER --password-stdin"
+    - ssh -i $SSH_KEY $SSH_USER@$SSH_SERVER "cd /opt/oxusedu-demo && bash deploy.sh staging"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $STAGING_BRANCH
+
+deploy_production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan $SSH_PROD_SERVER >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    - chmod 600 $SSH_PROD_KEY
+  script:
+    - ssh -i $SSH_PROD_KEY $SSH_PROD_USER@$SSH_PROD_SERVER \
+      "echo $CI_DEPLOY_PASSWORD | docker login $CI_REGISTRY -u $CI_DEPLOY_USER --password-stdin"
+    - ssh -i $SSH_PROD_KEY $SSH_PROD_USER@$SSH_PROD_SERVER "cd /opt/oxusedu && bash deploy.sh production"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $PROD_BRANCH

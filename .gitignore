@@ -1,0 +1,81 @@
+# Dependencies and package-manager state
+node_modules/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Enforce Yarn as the only package manager
+package-lock.json
+npm-shrinkwrap.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+bun.lock
+bun.lockb
+
+# Compiled and generated output
+dist/
+build/
+generated/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+.envrc
+*.key
+*.pem
+*.p12
+*.pfx
+*.pk
+
+# Logs and runtime files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pids/
+*.pid
+*.pid.lock
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Temporary files
+.temp/
+.tmp/
+tmp/
+temp/
+
+# IDEs and operating systems
+.DS_Store
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Local tooling and reports
+.claude/tasks/
+graphify-out/
+tests/**/playwright-report/
+tests/**/test-results/
+
+# Production diagnostics copied locally for inspection
+/oxus-*-artifacts.tar.gz
+/package.server.json
+/yarn.lock.server
+/ChatExport_*/

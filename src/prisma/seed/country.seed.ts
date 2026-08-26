@@ -1,0 +1,43 @@
+import { prismaClient } from "./prisma-client";
+
+export async function seedCountries() {
+  await prismaClient.country.createMany({
+    data: [
+      { id: 1, nameEn: "Kazakhstan", nameRu: "Казахстан", nameKk: "Қазақстан", isoCode: "KZ" },
+      { id: 2, nameEn: "Russia", nameRu: "Россия", nameKk: "Ресей", isoCode: "RU" },
+      { id: 3, nameEn: "Germany", nameRu: "Германия", nameKk: "Германия", isoCode: "DE" },
+      { id: 4, nameEn: "United Kingdom", nameRu: "Великобритания", nameKk: "Ұлыбритания", isoCode: "GB" },
+      { id: 5, nameEn: "United States", nameRu: "США", nameKk: "АҚШ", isoCode: "US" },
+      { id: 6, nameEn: "China", nameRu: "Китай", nameKk: "Қытай", isoCode: "CN" },
+      { id: 7, nameEn: "France", nameRu: "Франция", nameKk: "Франция", isoCode: "FR" },
+      { id: 8, nameEn: "Italy", nameRu: "Италия", nameKk: "Италия", isoCode: "IT" },
+      { id: 9, nameEn: "Spain", nameRu: "Испания", nameKk: "Испания", isoCode: "ES" },
+      { id: 10, nameEn: "Turkey", nameRu: "Турция", nameKk: "Түркия", isoCode: "TR" },
+      { id: 11, nameEn: "Japan", nameRu: "Япония", nameKk: "Жапония", isoCode: "JP" },
+      { id: 12, nameEn: "South Korea", nameRu: "Южная Корея", nameKk: "Оңтүстік Корея", isoCode: "KR" },
+      { id: 13, nameEn: "India", nameRu: "Индия", nameKk: "Үндістан", isoCode: "IN" },
+      { id: 14, nameEn: "Canada", nameRu: "Канада", nameKk: "Канада", isoCode: "CA" },
+      { id: 15, nameEn: "Australia", nameRu: "Австралия", nameKk: "Австралия", isoCode: "AU" },
+      { id: 16, nameEn: "Netherlands", nameRu: "Нидерланды", nameKk: "Нидерланд", isoCode: "NL" },
+      { id: 17, nameEn: "Poland", nameRu: "Польша", nameKk: "Польша", isoCode: "PL" },
+      { id: 18, nameEn: "Ukraine", nameRu: "Украина", nameKk: "Украина", isoCode: "UA" },
+      { id: 19, nameEn: "Uzbekistan", nameRu: "Узбекистан", nameKk: "Өзбекстан", isoCode: "UZ" },
+      { id: 20, nameEn: "Kyrgyzstan", nameRu: "Кыргызстан", nameKk: "Қырғызстан", isoCode: "KG" },
+      { id: 21, nameEn: "United Arab Emirates", nameRu: "Объединенные Арабские Эмираты", nameKk: "Біріккен Араб Әмірліктері", isoCode: "AE" },
+      { id: 22, nameEn: "Saudi Arabia", nameRu: "Саудовская Аравия", nameKk: "Сауд Арабиясы", isoCode: "SA" },
+      { id: 23, nameEn: "Brazil", nameRu: "Бразилия", nameKk: "Бразилия", isoCode: "BR" },
+      { id: 24, nameEn: "Mexico", nameRu: "Мексика", nameKk: "Мексика", isoCode: "MX" },
+      { id: 25, nameEn: "Singapore", nameRu: "Сингапур", nameKk: "Сингапур", isoCode: "SG" },
+      { id: 26, nameEn: "Finland", nameRu: "Финляндия", nameKk: "Финляндия", isoCode: "FI" },
+      { id: 27, nameEn: "Ireland", nameRu: "Ирландия", nameKk: "Ирландия", isoCode: "IE" },
+      { id: 28, nameEn: "Switzerland", nameRu: "Швейцария", nameKk: "Швейцария", isoCode: "CH" },
+      { id: 29, nameEn: "Malaysia", nameRu: "Малайзия", nameKk: "Малайзия", isoCode: "MY" },
+      { id: 30, nameEn: "Austria", nameRu: "Австрия", nameKk: "Австрия", isoCode: "AT" },
+      { id: 31, nameEn: "Norway", nameRu: "Норвегия", nameKk: "Норвегия", isoCode: "NO" },
+      { id: 32, nameEn: "Viet Nam", nameRu: "Вьетнам", nameKk: "Вьетнам", isoCode: "VN" },
+      { id: 33, nameEn: "Czechia", nameRu: "Чехия", nameKk: "Чехия", isoCode: "CZ" },
+      { id: 34, nameEn: "Sweden", nameRu: "Швеция", nameKk: "Швеция", isoCode: "SE" },
+    ],
+    skipDuplicates: true,
+  });
+}

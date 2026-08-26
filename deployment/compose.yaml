@@ -1,0 +1,197 @@
+# Shared server stack for both Test and Production environments.
+# Each server supplies its own deployment/.env; secrets are never built into images.
+x-db-env: &db-env
+  PGDATABASE: ${PGDATABASE}
+  PGHOST: ${PGHOST}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_PORT: ${POSTGRES_PORT}
+
+x-redis-env: &redis-env
+  REDIS_HOST: ${REDIS_HOST}
+  REDIS_PORT: ${REDIS_PORT}
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+x-minio-env: &minio-env
+  MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+  MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
+
+x-aws-s3-env: &aws-s3-env
+  AWS_REGION: ${AWS_REGION:-}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_MINIO_ENDPOINT: ${AWS_MINIO_ENDPOINT:-http://oxusedu-minio:9000}
+  AWS_BUCKET_NAME: ${AWS_S3_BUCKET_NAME:-uploads}
+  AWS_MINIO_PUBLIC_URL: ${AWS_MINIO_PUBLIC_URL}
+
+x-backend-env: &backend-env
+  APP_URL: ${APP_URL}
+  JWT_SECRET: ${JWT_SECRET}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${PGHOST}:${POSTGRES_PORT}/${PGDATABASE}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+  SENDER_PASSWORD: ${SENDER_PASSWORD}
+  SENDER_EMAIL: ${SENDER_EMAIL}
+  SMTP_PORT: ${SMTP_PORT}
+  SMTP_SERVER: ${SMTP_SERVER}
+  SMTP_SECURE: ${SMTP_SECURE}
+  TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+  TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM}
+  TWILIO_SMS_FROM: ${TWILIO_SMS_FROM}
+  JITSI_APP_ID: ${JITSI_APP_ID}
+  JAAS_API_KEY_ID: ${JAAS_API_KEY_ID}
+  FREEDOM_API_URL: ${FREEDOM_API_URL}
+  FREEDOM_MERCHANT_ID: ${FREEDOM_MERCHANT_ID}
+  FREEDOM_RECEIVE_SECRET_KEY: ${FREEDOM_RECEIVE_SECRET_KEY}
+  FREEDOM_PAYMENT_SECRET_KEY: ${FREEDOM_PAYMENT_SECRET_KEY}
+  FREEDOM_RESULT_URL: ${FREEDOM_RESULT_URL}
+  FREEDOM_FAILURE_URL: ${FREEDOM_FAILURE_URL}
+  FREEDOM_SUCCESS_URL: ${FREEDOM_SUCCESS_URL}
+  CHROME_WS_URL: ws://oxusedu-chrome:3000
+
+x-proxy-env: &proxy-env
+  NGINX_PORT: ${NGINX_PORT}
+
+services:
+  oxusedu-frontend:
+    image: ${REGISTRY_URL}/oxusedu/frontend:${APP_RELEASE:-latest}
+    depends_on:
+      - oxusedu-backend
+    networks:
+      - oxusedu-network
+    restart: "always"
+
+  oxusedu-frontend-admin:
+    image: ${REGISTRY_URL}/oxusedu/admin:${APP_RELEASE:-latest}
+    depends_on:
+      - oxusedu-backend
+    networks:
+      - oxusedu-network
+    restart: "always"
+
+  oxusedu-frontend-expert:
+    image: ${REGISTRY_URL}/oxusedu/expert:${APP_RELEASE:-latest}
+    depends_on:
+      - oxusedu-backend
+    networks:
+      - oxusedu-network
+    restart: "always"
+
+  oxusedu-chrome:
+    image: browserless/chrome:latest
+    environment:
+      - CONNECTION_TIMEOUT=60000
+      - MAX_CONCURRENT_SESSIONS=10
+    networks:
+      - oxusedu-network
+    restart: "always"
+
+  oxusedu-backend:
+    image: ${REGISTRY_URL}/oxusedu/backend:${APP_RELEASE:-latest}
+    environment:
+      <<: [*backend-env, *aws-s3-env, *redis-env, *db-env]
+    depends_on:
+      oxusedu-db:
+        condition: service_healthy
+      oxusedu-redis:
+        condition: service_healthy
+    restart: "always"
+    networks:
+      - oxusedu-network
+    volumes:
+      - ./jitsi-private-key.pk:/app/src/assets/jitsi-private-key.pk
+
+  oxusedu-db:
+    image: postgres:16.0-alpine
+    environment:
+      <<: [*db-env]
+    restart: "always"
+    volumes:
+      - pgdata:/var/lib/postgresql/data/
+    networks:
+      - oxusedu-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oxusedu-migrator:
+    image: ${REGISTRY_URL}/oxusedu/backend:${APP_RELEASE:-latest}
+    environment:
+      <<: [*db-env, *backend-env, *aws-s3-env]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - oxusedu-network
+    command: ["yarn", "prisma", "migrate", "deploy"]
+    depends_on:
+      oxusedu-db:
+        condition: service_healthy
+
+  oxusedu-redis:
+    image: redis:8-alpine
+    environment:
+      <<: [*redis-env]
+    restart: always
+    command: ["redis-server", "--requirepass", "$REDIS_PASSWORD"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "$REDIS_PASSWORD", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redisdata:/data
+    networks:
+      - oxusedu-network
+
+  oxusedu-minio:
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z
+    restart: unless-stopped
+    networks:
+      - oxusedu-network
+    command: server /export --console-address ":9090"
+    volumes:
+      - s3_storage:/export
+    environment:
+      <<: [*minio-env]
+    healthcheck:
+      test: ["CMD", "mc", "alias", "set", "minio", "http://localhost:9000", "${AWS_ACCESS_KEY_ID}", "${AWS_SECRET_ACCESS_KEY}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  oxusedu-gateway:
+    image: nginx:1.27
+    depends_on:
+      - oxusedu-backend
+      - oxusedu-minio
+      - oxusedu-frontend-expert
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - ${NGINX_PORT}:80
+      - ${NGINX_EXPERT_PORT}:81
+      - ${NGINX_ADMIN_PORT}:82
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - oxusedu-network
+
+volumes:
+  pgdata:
+  redisdata:
+  s3_storage:
+
+networks:
+  oxusedu-network:
+    driver: bridge

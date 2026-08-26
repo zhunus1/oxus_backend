@@ -1,0 +1,41 @@
+# Version control and local tooling
+.git
+.gitignore
+.gitlab-ci.yml
+.claude
+.vscode
+.idea
+
+# Dependencies and build output
+node_modules
+.yarn
+dist
+build
+generated
+coverage
+*.tsbuildinfo
+
+# Secrets and local environment
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.pk
+
+# Logs, temporary files, and local diagnostics
+*.log
+.temp
+.tmp
+tmp
+temp
+oxus-*-artifacts.tar.gz
+package.server.json
+yarn.lock.server
+
+# Files not required to build the backend image
+deployment
+test
+README.md
+dev.Dockerfile
