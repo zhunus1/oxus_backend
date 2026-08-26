@@ -1,5 +1,4 @@
-# Validates every pull request. Successful main builds also publish the Test image.
-# This workflow does not access server secrets or deploy to a server.
+# Validates every pull request. Successful main builds publish and deploy the Test image.
 name: CI
 
 on:
@@ -99,3 +98,47 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-test:
+    name: Deploy to Test server
+    needs: docker
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: test
+      url: https://test.oxusedu.com
+    permissions:
+      contents: read
+
+    steps:
+      - name: Configure deployment SSH key
+        env:
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+          TEST_SSH_KNOWN_HOSTS: ${{ secrets.TEST_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" > "$HOME/.ssh/oxus_backend_test_deploy"
+          chmod 600 "$HOME/.ssh/oxus_backend_test_deploy"
+          printf '%s\n' "$TEST_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy published image
+        run: |
+          ssh \
+            -i "$HOME/.ssh/oxus_backend_test_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            oxusdeploy@test.oxusedu.com \
+            'sudo /opt/oxus_backend/deployment/deploy.sh'
+
+      - name: Verify public Test API
+        run: |
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            https://test.oxusedu.com/api/v1/health
