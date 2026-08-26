@@ -1,0 +1,76 @@
+# Validates every pull request and every commit pushed to main.
+# This workflow never publishes images, accesses server secrets, or deploys.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci
+
+jobs:
+  quality:
+    name: Install, lint, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Generate Prisma client
+        run: yarn prisma generate
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Test
+        run: yarn test --runInBand
+
+      - name: Build application
+        run: yarn build
+
+      - name: Validate deployment shell script
+        run: sh -n deployment/deploy.sh
+
+      - name: Validate local Compose configuration
+        run: docker compose -f compose.yaml config --quiet
+
+      - name: Validate server Compose configuration
+        run: docker compose --env-file deployment/.env.example -f deployment/compose.yaml config --quiet
+
+  docker:
+    name: Build production Docker image
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build production image
+        run: docker build --tag oxus_backend:ci .
