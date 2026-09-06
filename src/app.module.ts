@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { ScheduleModule } from "@nestjs/schedule";
 import { PrismaModule } from "./database/prisma.module";
 import { ValidatorsModule } from "./common/validators/validators.module";
 import { PrometheusModule } from "@willsoto/nestjs-prometheus";
@@ -40,8 +41,10 @@ import { AccountModule } from "./modules/account/account.module";
 import { TaskModule } from "./modules/task/task.module";
 import { CollabMeetingModule } from "./modules/collab-meeting/collab-meeting.module";
 
+/** Composes application modules and enables discovery of scheduled recovery jobs. */
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     ConfigModule.forRoot(),
     PrismaModule,
     PrometheusModule.register({

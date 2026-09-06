@@ -146,6 +146,20 @@ enum LeadStatus {
   CALL_SCHEDULED
   RECALL
   REJECTED
+  OFFICE_INVITED
+  CONTRACT_PENDING
+  CONVERTED
+}
+
+enum LeadMeetingFormat {
+  ONLINE
+  OFFICE
+}
+
+enum LeadCallbackReason {
+  NO_ANSWER
+  RESCHEDULED
+  FOLLOW_UP
 }
 
 enum LeadCallbackStatus {
@@ -207,18 +221,21 @@ model User {
   requestedOrganisations       OrganisationRequest[]     @relation("OrganisationRequestRequester")
   reviewedOrganisationRequests OrganisationRequest[]     @relation("OrganisationRequestReviewer")
 
-  studentPackages    StudentPackage[]   @relation("StudentPackagesStudent")
-  meetingsAsStudent  Meeting[]          @relation("MeetingsStudent")
-  contactedLeads     Lead[]             @relation("LeadContactedBy")
-  assignedSalesLeads Lead[]             @relation("LeadAssignedSalesManager")
-  createdSalesLeads  Lead[]             @relation("LeadCreatedBy")
-  leadCallbacks      LeadCallback[]     @relation("LeadCallbackSalesManager")
-  leadCallsManaged   LeadExpertCall[]   @relation("LeadCallSalesManager")
-  leadCallsAsExpert  LeadExpertCall[]   @relation("LeadCallExpert")
-  leadActivities     LeadActivity[]     @relation("LeadActivityActor")
-  studentContracts   Contract[]         @relation("StudentContracts")
-  signedContracts    Contract[]         @relation("ContractSignedBy")
-  journeyEvents      UserJourneyEvent[]
+  studentPackages       StudentPackage[]        @relation("StudentPackagesStudent")
+  meetingsAsStudent     Meeting[]               @relation("MeetingsStudent")
+  contactedLeads        Lead[]                  @relation("LeadContactedBy")
+  assignedSalesLeads    Lead[]                  @relation("LeadAssignedSalesManager")
+  assignedExpertLeads   Lead[]                  @relation("LeadAssignedExpert")
+  leadInvitations       LeadMeetingInvitation[] @relation("LeadInvitationManager")
+  leadStudentInvitation LeadStudentInvitation?
+  createdSalesLeads     Lead[]                  @relation("LeadCreatedBy")
+  leadCallbacks         LeadCallback[]          @relation("LeadCallbackSalesManager")
+  leadCallsManaged      LeadExpertCall[]        @relation("LeadCallSalesManager")
+  leadCallsAsExpert     LeadExpertCall[]        @relation("LeadCallExpert")
+  leadActivities        LeadActivity[]          @relation("LeadActivityActor")
+  studentContracts      Contract[]              @relation("StudentContracts")
+  signedContracts       Contract[]              @relation("ContractSignedBy")
+  journeyEvents         UserJourneyEvent[]
 
   expertTasks  Task[]        @relation("ExpertTasks")
   studentTasks Task[]        @relation("StudentTasks")
@@ -1012,6 +1029,7 @@ model Language {
 model Contract {
   id             String @id @default(uuid())
   contractNumber String @unique
+  lead           Lead?
 
   studentId Int
   student   User @relation("StudentContracts", fields: [studentId], references: [id])
@@ -1067,7 +1085,7 @@ model LeadSource {
   submissions LeadSubmission[]
 
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model Lead {
@@ -1086,6 +1104,16 @@ model Lead {
   assignedSalesManagerId Int?
   assignedSalesManager   User?     @relation("LeadAssignedSalesManager", fields: [assignedSalesManagerId], references: [id], onDelete: SetNull)
   acceptedAt             DateTime?
+
+  assignedExpertUserId Int?
+  assignedExpertUser   User?                   @relation("LeadAssignedExpert", fields: [assignedExpertUserId], references: [id], onDelete: SetNull)
+  expertStartedAt      DateTime?
+  expertQuestionnaire  Json?
+  callbackReason       LeadCallbackReason?
+  contractId           String?                 @unique
+  contract             Contract?               @relation(fields: [contractId], references: [id])
+  convertedAt          DateTime?
+  meetingInvitations   LeadMeetingInvitation[]
 
   createdByUserId Int?
   createdByUser   User? @relation("LeadCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -1115,6 +1143,7 @@ model Lead {
   @@index([status, assignedSalesManagerId, createdAt])
   @@index([phoneNumber])
   @@index([originSourceId, createdAt])
+  @@index([assignedExpertUserId, status, createdAt])
 }
 
 model LeadSubmission {
@@ -1152,13 +1181,14 @@ model LeadCallback {
   salesManager   User @relation("LeadCallbackSalesManager", fields: [salesManagerId], references: [id])
 
   scheduledFor DateTime
-  status       LeadCallbackStatus @default(SCHEDULED)
+  status       LeadCallbackStatus  @default(SCHEDULED)
   comment      String?
+  reason       LeadCallbackReason?
 
   completedAt DateTime?
   cancelledAt DateTime?
   createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  updatedAt   DateTime  @default(now()) @updatedAt
 
   @@index([salesManagerId, status, scheduledFor])
   @@index([leadId, createdAt])
@@ -1176,9 +1206,17 @@ model LeadExpertCall {
   expertUserId Int
   expertUser   User @relation("LeadCallExpert", fields: [expertUserId], references: [id])
 
-  startTime DateTime
-  endTime   DateTime
-  comment   String?
+  startTime     DateTime
+  endTime       DateTime
+  comment       String?
+  format        LeadMeetingFormat      @default(ONLINE)
+  officeCode    String?
+  officeAddress String?
+  questionnaire Json?
+  outcome       String?
+  completedAt   DateTime?
+  invitationId  String?                @unique
+  invitation    LeadMeetingInvitation? @relation(fields: [invitationId], references: [id])
 
   status          LeadExpertCallStatus @default(REQUESTED)
   responseComment String?
@@ -1188,11 +1226,42 @@ model LeadExpertCall {
   meeting   Meeting? @relation(fields: [meetingId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@index([expertUserId, status, startTime])
   @@index([salesManagerId, status, startTime])
   @@index([leadId, createdAt])
+}
+
+// A preview allocates a stable invitation, without reserving the expert's time.
+model LeadMeetingInvitation {
+  id             String          @id @default(uuid())
+  leadId         Int
+  lead           Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  salesManagerId Int
+  salesManager   User            @relation("LeadInvitationManager", fields: [salesManagerId], references: [id])
+  roomName       String          @unique
+  booking        Json
+  expiresAt      DateTime
+  cancelledAt    DateTime?
+  createdAt      DateTime        @default(now())
+  call           LeadExpertCall?
+
+  @@index([leadId, createdAt])
+  @@index([expiresAt])
+}
+
+model LeadStudentInvitation {
+  id              String    @id @default(uuid())
+  userId          Int       @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  sentAt          DateTime?
+  deliveryVersion Int       @default(1)
+  createdAt       DateTime  @default(now())
+
+  @@index([sentAt, expiresAt])
 }
 
 model LeadActivity {

@@ -2,11 +2,12 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsDateString, IsIn, IsNumber, IsOptional, IsPositive, IsString, Matches } from "class-validator";
 import messages from "src/configs/messages";
 
+/** Accepts both legacy and server-generated CRM contract numbers when editing unsigned terms. */
 export class UpdateContractMetaDto {
   @ApiPropertyOptional({ example: "OXUS-2026-0001" })
   @IsOptional()
   @IsString()
-  @Matches(/^OXUS-\d{4}-\d{4}$/, { message: "contractNumber must match format OXUS-YYYY-NNNN" })
+  @Matches(/^OXUS-\d{4}-(?:\d{4}|CRM-\d{6,10})$/, { message: "contractNumber must match OXUS-YYYY-NNNN or OXUS-YYYY-CRM-NNNNNN" })
   contractNumber?: string;
 
   @ApiPropertyOptional({ example: 150000 })

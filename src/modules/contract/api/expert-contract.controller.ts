@@ -9,6 +9,7 @@ import { CreateContractForStudentDto } from "./dto/create-contract-for-student.d
 import { UpdateContractMetaDto } from "./dto/update-contract-meta.dto";
 import { ContractStatus } from "generated/prisma/enums";
 
+/** Exposes expert contract operations with assigned-expert checks for CRM contracts. */
 @ApiTags("Contract")
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles("EXPERT", "ADMIN")
@@ -24,29 +25,32 @@ export class ExpertContractController {
     return this.contractService.createContractForStudent(dto);
   }
 
+  /** Lists contracts using the authenticated expert CRM visibility scope. */
   @ApiOperation({ summary: "List all contracts, optionally filtered by status" })
   @ApiResponse({ status: 200, description: "Contracts returned" })
   @ApiQuery({ name: "status", enum: ContractStatus, required: false })
   @Get()
-  async getAllContracts(@Query("status") status?: ContractStatus) {
-    return this.contractService.getAllContracts(status);
+  async getAllContracts(@Req() req: UserRequest, @Query("status") status?: ContractStatus) {
+    return this.contractService.getAllContracts(status, req.user.roleCode === "ADMIN" ? undefined : req.user.id);
   }
 
+  /** Loads a student contract subject to CRM ownership checks. */
   @ApiOperation({ summary: "Get contract for a specific student" })
   @ApiResponse({ status: 200, description: "Contract returned" })
   @ApiParam({ name: "studentId" })
   @Get("student/:studentId")
-  async getStudentContract(@Param("studentId", ParseIntPipe) studentId: number) {
-    return this.contractService.getContractByStudentId(studentId);
+  async getStudentContract(@Req() req: UserRequest, @Param("studentId", ParseIntPipe) studentId: number) {
+    return this.contractService.getContractByStudentId(studentId, req.user.roleCode === "ADMIN" ? undefined : req.user.id);
   }
 
+  /** Updates editable contract terms as the authenticated expert. */
   @ApiOperation({ summary: "Update contract metadata (before signing — price, currency, dates, number)" })
   @ApiResponse({ status: 200, description: "Contract updated" })
   @ApiParam({ name: "id" })
   @ApiBody({ type: UpdateContractMetaDto })
   @Patch(":id/meta")
-  async updateMeta(@Param("id") id: string, @Body() dto: UpdateContractMetaDto) {
-    return this.contractService.updateMeta(id, dto);
+  async updateMeta(@Req() req: UserRequest, @Param("id") id: string, @Body() dto: UpdateContractMetaDto) {
+    return this.contractService.updateMeta(id, dto, req.user.id);
   }
 
   @ApiOperation({ summary: "Send OTP to expert email for contract signing" })

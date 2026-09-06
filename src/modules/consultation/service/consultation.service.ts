@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import type { ConsultationActor } from "../domain/consultation-access";
+import { BadRequestException, ForbiddenException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
 import { ConsultationRepository } from "../repository/consultation.repository";
 import { CreateConsultationDto } from "../api/dto/create-consultation.dto";
 import { BookConsultationDto } from "../api/dto/book-consultation.dto";
@@ -18,6 +19,7 @@ import { ExpertMeetingHistoryQueryDto } from "../api/dto/expert-meeting-history-
 
 type ExpertMeeting = Awaited<ReturnType<ConsultationRepository["findByConsultantProfileId"]>>[number];
 
+/** Coordinates participant-scoped consultation actions and post-commit reminders. */
 @Injectable()
 export class ConsultationService {
   private readonly logger = new Logger(ConsultationService.name);
@@ -30,42 +32,35 @@ export class ConsultationService {
     private readonly sms: SmsService,
   ) {}
 
-  async create(dto: CreateConsultationDto) {
+  /** Creates a consultation for the authenticated actor and preserves domain HTTP errors. */
+  async create(dto: CreateConsultationDto, actor: ConsultationActor) {
     try {
-      const consultation = await this.consultationRepo.create(dto);
+      const consultation = await this.consultationRepo.create(dto, actor);
 
       // Schedule reminder email
       await this.scheduleReminder(consultation);
 
       return consultation;
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error creating consultation: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_CREATE_ERROR(this.entityName));
     }
   }
 
-  async update(id: number, dto: UpdateConsultationDto) {
+  /** Updates an authorized consultation and removes reminders when it is cancelled or completed. */
+  async update(id: number, dto: UpdateConsultationDto, actor: ConsultationActor) {
     try {
-      const updatedConsultation = await this.consultationRepo.update(id, dto);
+      const updatedConsultation = await this.consultationRepo.update(id, dto, actor);
 
-      // If startTime changed or status changed to CANCELLED, update/remove job
-      if (dto.startTime || dto.status === ConsultationStatus.DONE) {
-        // Remove old job if exists
+      if (dto.startTime || dto.endTime || dto.status) {
         await this.removeReminder(id);
-
-        // Reschedule if not cancelled/done
-        if (updatedConsultation.status !== ConsultationStatus.DONE) {
-          await this.scheduleReminder(updatedConsultation);
-        }
-      } else if (dto.status === ConsultationStatus.REQUESTED) {
-        // If status changed back to requested, we might want to reschedule or keep it
-        await this.removeReminder(id);
-        await this.scheduleReminder(updatedConsultation);
+        if (updatedConsultation.status !== ConsultationStatus.CANCELLED && updatedConsultation.status !== ConsultationStatus.DONE) await this.scheduleReminder(updatedConsultation);
       }
 
       return updatedConsultation;
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error updating consultation: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_UPDATE_ERROR_ENTITY(this.entityName));
     }
@@ -75,7 +70,9 @@ export class ConsultationService {
     return `reminder-${consultationId}`;
   }
 
+  /** Schedules reminders only for active meetings using the consultant user contact. */
   private async scheduleReminder(consultation: any) {
+    if (!consultation.meeting || consultation.status === ConsultationStatus.CANCELLED || consultation.status === ConsultationStatus.DONE) return;
     const startTime = new Date(consultation.startTime);
     const now = new Date();
 
@@ -88,7 +85,7 @@ export class ConsultationService {
         "consultation-reminder",
         {
           clientEmail: consultation.client.email,
-          consultantEmail: consultation.consultant.email,
+          consultantEmail: consultation.consultant.user.email,
           startTime: consultation.startTime,
           meetingLink: `http://localhost:3000/meet/${consultation.meeting.id}`,
         },
@@ -113,18 +110,21 @@ export class ConsultationService {
     }
   }
 
-  async findById(id: number) {
-    const consultation = await this.consultationRepo.findById(id);
+  /** Returns a consultation only within the authenticated actor visibility scope. */
+  async findById(id: number, actor: ConsultationActor) {
+    const consultation = await this.consultationRepo.findById(id, actor);
     if (!consultation) {
       throw new NotFoundException(messages.NOT_FOUND(this.entityName));
     }
     return consultation;
   }
 
-  async findMany(query: ConsultationQueryDto) {
+  /** Combines filters with participant visibility without exposing other users consultations. */
+  async findMany(query: ConsultationQueryDto, actor: ConsultationActor) {
     try {
-      return await this.consultationRepo.findMany(query);
+      return await this.consultationRepo.findMany(query, actor);
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error fetching consultations: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR(this.entityName));
     }
@@ -174,6 +174,7 @@ export class ConsultationService {
     return schedule.some(block => startMinute >= block.startMinute && endMinute <= block.endMinute);
   }
 
+  /** Books a student consultation, preserving domain conflicts from transactional persistence. */
   async book(studentUserId: number, dto: BookConsultationDto) {
     try {
       const portrait = await this.consultationRepo.findPortraitByUserId(studentUserId);
@@ -183,7 +184,7 @@ export class ConsultationService {
 
       return await this.bookConsultationForStudentPortfolio(studentUserId, portrait, dto);
     } catch (error) {
-      if (error instanceof NotFoundException || error instanceof BadRequestException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error booking consultation: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_CREATE_ERROR(this.entityName));
     }
@@ -213,7 +214,7 @@ export class ConsultationService {
 
       return await this.bookConsultationForStudentPortfolio(dto.clientUserId, portrait, bookingDto, ConsultationStatus.CONFIRMED);
     } catch (error) {
-      if (error instanceof NotFoundException || error instanceof BadRequestException || error instanceof ForbiddenException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       this.logger.error(`Error expert booking consultation: ${error}`);
@@ -221,6 +222,7 @@ export class ConsultationService {
     }
   }
 
+  /** Confirms or declines a pending request, rechecking ownership and state inside the update transaction. */
   async respondToMeetingRequest(expertUserId: number, meetingId: number, action: "confirm" | "decline") {
     try {
       const consultantProfile = await this.consultationRepo.findConsultantProfileByUserId(expertUserId);
@@ -238,7 +240,7 @@ export class ConsultationService {
       }
 
       const newStatus = action === "confirm" ? ConsultationStatus.CONFIRMED : ConsultationStatus.CANCELLED;
-      const updated = await this.consultationRepo.update(meetingId, { status: newStatus });
+      const updated = await this.consultationRepo.update(meetingId, { status: newStatus }, { id: expertUserId, roleCode: "EXPERT" }, ConsultationStatus.REQUESTED);
 
       if (action === "decline") {
         await this.removeReminder(meetingId);
@@ -246,7 +248,7 @@ export class ConsultationService {
 
       return updated;
     } catch (error) {
-      if (error instanceof NotFoundException || error instanceof BadRequestException || error instanceof ForbiddenException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error responding to meeting request: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_UPDATE_ERROR_ENTITY(this.entityName));
     }
@@ -389,6 +391,7 @@ export class ConsultationService {
     }
   }
 
+  /** Lists the authenticated expert meetings and preserves access errors. */
   async findMyExpertMeetings(userId: number, query: ConsultationQueryDto) {
     try {
       const consultantProfile = await this.consultationRepo.findConsultantProfileByUserId(userId);
@@ -400,12 +403,13 @@ export class ConsultationService {
       const consultations = await this.consultationRepo.findByConsultantProfileId(consultantProfile.id, query);
       return this.localizeExpertMeetingTimes(consultations);
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error fetching expert meetings: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR(this.entityName));
     }
   }
 
+  /** Lists pending requests for the authenticated expert. */
   async findMyPendingExpertMeetings(userId: number) {
     try {
       const consultantProfile = await this.consultationRepo.findConsultantProfileByUserId(userId);
@@ -417,12 +421,13 @@ export class ConsultationService {
       const consultations = await this.consultationRepo.findPendingByConsultantProfileId(consultantProfile.id);
       return this.localizeExpertMeetingTimes(consultations);
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error fetching pending expert meetings: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR(this.entityName));
     }
   }
 
+  /** Paginates the authenticated expert completed request history. */
   async findMyExpertMeetingHistory(userId: number, query: ExpertMeetingHistoryQueryDto) {
     try {
       const consultantProfile = await this.consultationRepo.findConsultantProfileByUserId(userId);
@@ -444,7 +449,7 @@ export class ConsultationService {
         },
       };
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof HttpException) throw error;
       this.logger.error(`Error fetching expert meeting history: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR(this.entityName));
     }

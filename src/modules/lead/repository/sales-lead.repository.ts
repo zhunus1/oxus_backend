@@ -1,7 +1,8 @@
-import { Injectable } from "@nestjs/common";
-import { LeadCallbackStatus, LeadExpertCallStatus, LeadStatus, MeetingStatus, Prisma } from "generated/prisma/client";
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { LeadCallbackReason, LeadCallbackStatus, LeadExpertCallStatus, LeadStatus, MeetingStatus, Prisma } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
 import { SalesLeadQueryDto } from "../api/dto/sales/sales-lead-query.dto";
+import { leadTransaction } from "../domain/lead-transaction";
 import { LEAD_ACTIVITY } from "../domain/lead.constants";
 
 const salesManagerSelect = {
@@ -14,36 +15,38 @@ const salesLeadListInclude = {
   originSource: { select: { id: true, code: true, name: true } },
   assignedSalesManager: { select: salesManagerSelect },
   callbacks: {
-    orderBy: { createdAt: "desc" as const },
+    orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
     take: 1,
   },
   expertCalls: {
-    orderBy: { createdAt: "desc" as const },
+    orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
     take: 1,
     include: {
       expertUser: { select: salesManagerSelect },
     },
   },
   submissions: {
-    orderBy: { receivedAt: "desc" as const },
+    orderBy: [{ receivedAt: "desc" as const }, { id: "desc" as const }],
     take: 1,
     select: { id: true, metrics: true, receivedAt: true },
   },
-} as const;
+} satisfies Prisma.LeadInclude;
 
 const salesLeadDetailInclude = {
   ...salesLeadListInclude,
   createdByUser: { select: salesManagerSelect },
   submissions: {
-    orderBy: { receivedAt: "desc" as const },
+    orderBy: [{ receivedAt: "desc" as const }, { id: "desc" as const }],
     include: { source: { select: { id: true, code: true, name: true } } },
   },
-} as const;
+} satisfies Prisma.LeadInclude;
 
+/** Persists Sales lead transitions atomically and scopes reads to manager visibility. */
 @Injectable()
 export class SalesLeadRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Includes unassigned leads only in the NEW queue; all other statuses belong to the manager. */
   private visibleWhere(managerId: number, status: LeadStatus): Prisma.LeadWhereInput {
     if (status === LeadStatus.NEW) {
       return {
@@ -55,6 +58,7 @@ export class SalesLeadRepository {
     return { status, assignedSalesManagerId: managerId };
   }
 
+  /** Paginates visible leads with deterministic latest snapshots and safe contact or ID search. */
   async list(managerId: number, query: SalesLeadQueryDto) {
     const where: Prisma.LeadWhereInput = {
       deletedAt: null,
@@ -65,7 +69,9 @@ export class SalesLeadRepository {
 
     const search = query.search?.trim();
     if (search) {
-      const id = /^\d+$/.test(search) ? Number(search) : null;
+      const numericId = /^\d+$/.test(search) ? Number(search) : NaN;
+      // Lead IDs are PostgreSQL int4; unformatted phone numbers are often larger.
+      const id = Number.isSafeInteger(numericId) && numericId > 0 && numericId <= 2_147_483_647 ? numericId : null;
       const phoneDigits = search.replace(/\D/g, "");
       const phoneSearch = phoneDigits.length >= 3 ? phoneDigits : search;
       where.AND = [
@@ -94,22 +100,31 @@ export class SalesLeadRepository {
     return { data, total };
   }
 
+  /** Counts visible leads by status in one query and returns zero for empty statuses. */
   async summary(managerId: number) {
-    const statuses = [LeadStatus.NEW, LeadStatus.CALL_SCHEDULED, LeadStatus.RECALL, LeadStatus.REJECTED];
-    const counts = await Promise.all(
-      statuses.map(status =>
-        this.prisma.lead.count({
-          where: {
-            deletedAt: null,
-            ...this.visibleWhere(managerId, status),
-          },
-        }),
-      ),
-    );
-
-    return Object.fromEntries(statuses.map((status, index) => [status, counts[index]])) as Record<LeadStatus, number>;
+    const statuses = [
+      LeadStatus.NEW,
+      LeadStatus.CALL_SCHEDULED,
+      LeadStatus.RECALL,
+      LeadStatus.REJECTED,
+      LeadStatus.OFFICE_INVITED,
+      LeadStatus.CONTRACT_PENDING,
+      LeadStatus.CONVERTED,
+    ];
+    const counts = await this.prisma.lead.groupBy({
+      by: ["status"],
+      where: {
+        deletedAt: null,
+        OR: [{ assignedSalesManagerId: managerId }, { status: LeadStatus.NEW, assignedSalesManagerId: null }],
+      },
+      _count: { _all: true },
+    });
+    const summary = Object.fromEntries(statuses.map(status => [status, 0])) as Record<LeadStatus, number>;
+    for (const row of counts) summary[row.status] = row._count._all;
+    return summary;
   }
 
+  /** Loads a card only when it is unassigned and new, or owned by this manager. */
   findVisibleById(leadId: number, managerId: number) {
     return this.prisma.lead.findFirst({
       where: {
@@ -121,13 +136,15 @@ export class SalesLeadRepository {
     });
   }
 
+  /** Checks ownership using only the lead ID, without loading questionnaire history. */
   findOwnedById(leadId: number, managerId: number) {
     return this.prisma.lead.findFirst({
       where: { id: leadId, assignedSalesManagerId: managerId, deletedAt: null },
-      include: salesLeadDetailInclude,
+      select: { id: true },
     });
   }
 
+  /** Claims an unassigned NEW lead with one conditional update; losing a race returns null. */
   async accept(leadId: number, managerId: number) {
     return this.prisma.$transaction(async tx => {
       const result = await tx.lead.updateMany({
@@ -150,8 +167,11 @@ export class SalesLeadRepository {
     });
   }
 
-  async createCallback(leadId: number, managerId: number, scheduledFor: Date, comment?: string) {
-    return this.runSerializable(async tx => {
+  /** Schedules a callback and reminder while cancelling previous callbacks and consultations atomically. */
+  async createCallback(leadId: number, managerId: number, scheduledFor: Date, comment?: string, reason?: LeadCallbackReason) {
+    return leadTransaction(this.prisma, async tx => {
+      const owned = await this.requireMutableOwned(tx, leadId, managerId);
+      const callbackReason = reason ?? owned.callbackReason;
       const cancelledExpertCalls = await this.cancelActiveExpertCalls(tx, leadId, managerId, "CALLBACK_SCHEDULED");
       await tx.leadCallback.updateMany({
         where: { leadId, status: LeadCallbackStatus.SCHEDULED },
@@ -163,7 +183,7 @@ export class SalesLeadRepository {
       });
 
       const callback = await tx.leadCallback.create({
-        data: { leadId, salesManagerId: managerId, scheduledFor, comment },
+        data: { leadId, salesManagerId: managerId, scheduledFor, comment, reason: callbackReason },
       });
       const notification = await tx.notificationLog.create({
         data: {
@@ -172,14 +192,14 @@ export class SalesLeadRepository {
           channel: "IN_APP",
           type: "LEAD_CALLBACK_REMINDER",
           status: "PENDING",
-          content: "Пора перезвонить клиенту",
+          content: `Пора перезвонить: ${owned.displayName ?? "клиент"}`,
           metadata: { callbackId: callback.id },
           scheduledFor,
         },
       });
       const lead = await tx.lead.update({
         where: { id: leadId },
-        data: { status: LeadStatus.RECALL, rejectedAt: null, rejectionReason: null },
+        data: { status: LeadStatus.RECALL, callbackReason, rejectedAt: null, rejectionReason: null },
         include: salesLeadDetailInclude,
       });
       await tx.leadActivity.create({
@@ -195,8 +215,10 @@ export class SalesLeadRepository {
     });
   }
 
+  /** Edits an active callback; changes to comments alone preserve the existing reminder. */
   async updateCallback(callbackId: number, leadId: number, managerId: number, data: { scheduledFor?: Date; status?: LeadCallbackStatus; comment?: string }) {
-    return this.runSerializable(async tx => {
+    return leadTransaction(this.prisma, async tx => {
+      const owned = await this.requireMutableOwned(tx, leadId, managerId);
       const existing = await tx.leadCallback.findFirst({
         where: { id: callbackId, leadId, salesManagerId: managerId },
       });
@@ -218,13 +240,15 @@ export class SalesLeadRepository {
         },
       });
 
-      await tx.notificationLog.updateMany({
-        where: { leadId, userId: managerId, type: "LEAD_CALLBACK_REMINDER", status: "PENDING" },
-        data: { status: "CANCELLED" },
-      });
+      const reminderChanged = status !== LeadCallbackStatus.SCHEDULED || scheduledFor.getTime() !== existing.scheduledFor.getTime();
+      if (reminderChanged)
+        await tx.notificationLog.updateMany({
+          where: { leadId, userId: managerId, type: "LEAD_CALLBACK_REMINDER", status: "PENDING" },
+          data: { status: "CANCELLED" },
+        });
 
       const notification =
-        status === LeadCallbackStatus.SCHEDULED
+        reminderChanged && status === LeadCallbackStatus.SCHEDULED
           ? await tx.notificationLog.create({
               data: {
                 userId: managerId,
@@ -232,7 +256,7 @@ export class SalesLeadRepository {
                 channel: "IN_APP",
                 type: "LEAD_CALLBACK_REMINDER",
                 status: "PENDING",
-                content: "Пора перезвонить клиенту",
+                content: `Пора перезвонить: ${owned.displayName ?? "клиент"}`,
                 metadata: { callbackId },
                 scheduledFor,
               },
@@ -253,7 +277,7 @@ export class SalesLeadRepository {
           ? await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: salesLeadDetailInclude })
           : await tx.lead.update({
               where: { id: leadId },
-              data: { status: LeadStatus.NEW },
+              data: { status: owned.assignedExpertUserId ? LeadStatus.RECALL : LeadStatus.NEW },
               include: salesLeadDetailInclude,
             });
 
@@ -261,8 +285,10 @@ export class SalesLeadRepository {
     });
   }
 
+  /** Closes an owned lead and cancels its active consultations, callbacks, and pending notifications. */
   async reject(leadId: number, managerId: number, reason: string) {
-    return this.runSerializable(async tx => {
+    return leadTransaction(this.prisma, async tx => {
+      await this.requireMutableOwned(tx, leadId, managerId);
       await tx.leadCallback.updateMany({
         where: { leadId, status: LeadCallbackStatus.SCHEDULED },
         data: { status: LeadCallbackStatus.CANCELLED, cancelledAt: new Date() },
@@ -285,6 +311,15 @@ export class SalesLeadRepository {
     });
   }
 
+  /** Rechecks ownership inside the transaction and prevents changes after contract preparation. */
+  private async requireMutableOwned(tx: Prisma.TransactionClient, leadId: number, managerId: number) {
+    const lead = await tx.lead.findFirst({ where: { id: leadId, assignedSalesManagerId: managerId, deletedAt: null } });
+    if (!lead) throw new NotFoundException("Lead not found");
+    if (lead.contractId) throw new ConflictException("Lead is already in the contract process");
+    return lead;
+  }
+
+  /** Cancels active lead calls and linked meetings, recording an activity for each call. */
   private async cancelActiveExpertCalls(tx: Prisma.TransactionClient, leadId: number, actorUserId: number, reason: string) {
     const activeCalls = await tx.leadExpertCall.findMany({
       where: { leadId, status: { in: [LeadExpertCallStatus.REQUESTED, LeadExpertCallStatus.CONFIRMED] } },
@@ -314,21 +349,7 @@ export class SalesLeadRepository {
     return activeCalls;
   }
 
-  private async runSerializable<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        return await this.prisma.$transaction(operation, {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        });
-      } catch (error) {
-        const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: string }).code : undefined;
-        if ((code === "P2034" || code === "P2002") && attempt < 3) continue;
-        throw error;
-      }
-    }
-    throw new Error("Unreachable transaction retry state");
-  }
-
+  /** Returns ordered activity history after the service has checked access to the lead. */
   activities(leadId: number) {
     return this.prisma.leadActivity.findMany({
       where: { leadId },
@@ -337,6 +358,7 @@ export class SalesLeadRepository {
     });
   }
 
+  /** Lists enabled lead sources for Sales filtering and manual entry. */
   sources() {
     return this.prisma.leadSource.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
   }

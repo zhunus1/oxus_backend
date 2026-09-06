@@ -1,3 +1,13 @@
+import { LeadStudentInvitationService, LeadStudentInvitationProcessor } from "./service/lead-student-invitation.service";
+import { LeadGuestMeetingService } from "./service/lead-guest-meeting.service";
+import { LeadContractService } from "./service/lead-contract.service";
+import { ExpertLeadService } from "./service/expert-lead.service";
+import { LeadAvailabilityService } from "./service/lead-availability.service";
+import { ManualLeadV2Service } from "./service/manual-lead-v2.service";
+import { CalculatorQuestionnaireService } from "./service/calculator-questionnaire.service";
+import { PublicLeadAccessController } from "./api/public-lead-access.controller";
+import { ExpertLeadController } from "./api/expert-lead.controller";
+import { SalesV2Controller } from "./api/sales-v2.controller";
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "src/database/prisma.module";
 import { LeadController } from "./api/lead.controller";
@@ -18,18 +28,36 @@ import { OfficeManualAdapter } from "./service/office-manual.adapter";
 import { LegacyContactFormAdapter } from "./service/legacy-contact-form.adapter";
 import { SalesLeadService } from "./service/sales-lead.service";
 import { LeadExpertCallService } from "./service/lead-expert-call.service";
-import { LeadRealtimeGateway } from "./realtime/lead-realtime.gateway";
+import { LeadRealtimeModule } from "./realtime/lead-realtime.module";
+import { MeetingModule } from "../meeting/meeting.module";
+import { MailModule } from "../mail/mail.module";
+import { ConfigModule } from "@nestjs/config";
 import { LeadNotificationService } from "./service/lead-notification.service";
 import { LeadNotificationProcessor } from "./service/lead-notification.processor";
 
+/** Registers lead ingestion, Sales and Expert workflows, and durable notification workers. */
 @Module({
   imports: [
     PrismaModule,
+    LeadRealtimeModule,
+    MeetingModule,
+    MailModule,
+    ConfigModule,
+    BullModule.registerQueue({ name: "lead-invitations" }),
     JwtModule,
     BullModule.registerQueue({ name: "lead-notifications" }),
     ThrottlerModule.forRoot([{ name: "public-lead-submission", ttl: 60_000, limit: 30 }]),
   ],
-  controllers: [LeadController, PublicLeadController, SalesLeadController, ExpertLeadCallController, NotificationController],
+  controllers: [
+    SalesV2Controller,
+    ExpertLeadController,
+    PublicLeadAccessController,
+    LeadController,
+    PublicLeadController,
+    SalesLeadController,
+    ExpertLeadCallController,
+    NotificationController,
+  ],
   providers: [
     LeadService,
     LeadRepository,
@@ -41,7 +69,14 @@ import { LeadNotificationProcessor } from "./service/lead-notification.processor
     LegacyContactFormAdapter,
     SalesLeadService,
     LeadExpertCallService,
-    LeadRealtimeGateway,
+    CalculatorQuestionnaireService,
+    ManualLeadV2Service,
+    LeadAvailabilityService,
+    ExpertLeadService,
+    LeadContractService,
+    LeadGuestMeetingService,
+    LeadStudentInvitationService,
+    LeadStudentInvitationProcessor,
     LeadNotificationService,
     LeadNotificationProcessor,
   ],

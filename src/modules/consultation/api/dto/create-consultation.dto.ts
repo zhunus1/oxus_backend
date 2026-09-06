@@ -4,6 +4,7 @@ import { ConsultationStatus } from "generated/prisma/enums";
 import { Exists } from "src/common/validators/exists.validator";
 import messages from "src/configs/messages";
 
+/** Validates ordinary consultation input; consultantId identifies a consultant profile, not a user. */
 export class CreateConsultationDto {
   @ApiProperty({ example: 1 })
   @IsInt({ message: messages.MUST_BE_INT("clientId") })
@@ -14,7 +15,7 @@ export class CreateConsultationDto {
   @ApiProperty({ example: 2 })
   @IsInt({ message: messages.MUST_BE_INT("consultantId") })
   @IsPositive({ message: messages.MUST_BE_POSITIVE("consultantId") })
-  @Exists("user", { message: args => messages.INVALID_RELATION("consultant", args.value) })
+  @Exists("consultantProfile", { message: args => messages.INVALID_RELATION("consultant", args.value) })
   consultantId: number;
 
   @ApiProperty({ example: "2026-01-26T23:00:00Z" })

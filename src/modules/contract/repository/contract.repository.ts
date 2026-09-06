@@ -1,4 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
+import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
+import { ConflictException, ForbiddenException, Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { Contract, ContractStatus } from "generated/prisma/client";
 import { CreateContractForStudentDto } from "../api/dto/create-contract-for-student.dto";
@@ -8,6 +10,7 @@ const CONTRACT_INCLUDE = {
   signedByUser: { select: { id: true, firstname: true, lastname: true, email: true } },
 } as const;
 
+/** Persists contracts and atomically applies CRM conversion when the student signs. */
 @Injectable()
 export class ContractRepository extends BaseRepository {
   private async generateContractNumber(): Promise<string> {
@@ -40,9 +43,10 @@ export class ContractRepository extends BaseRepository {
     });
   }
 
-  async findAllByStatus(status?: ContractStatus): Promise<Contract[]> {
+  /** Filters CRM contracts by assigned expert while retaining the legacy contract listing policy. */
+  async findAllByStatus(status?: ContractStatus, expertId?: number): Promise<Contract[]> {
     return this.prisma.contract.findMany({
-      where: status ? { status } : undefined,
+      where: { ...(status ? { status } : {}), ...(expertId ? { OR: [{ lead: null }, { lead: { assignedExpertUserId: expertId } }] } : {}) },
       include: { student: { select: { id: true, firstname: true, lastname: true, email: true } } },
       orderBy: { createdAt: "desc" },
     });
@@ -79,7 +83,19 @@ export class ContractRepository extends BaseRepository {
     });
   }
 
+  /** Records the expert signature; CRM contracts must still be waiting for expert signature. */
   async expertSign(id: string, expertUserId: number): Promise<Contract> {
+    await this.assertLeadExpert(id, expertUserId);
+    if (await this.findLead(id))
+      return leadTransaction(this.prisma, async tx => {
+        const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
+        if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("Contract has already changed");
+        return tx.contract.update({
+          where: { id },
+          data: { signedByUserId: expertUserId, status: ContractStatus.PENDING_STUDENT, expertSignedAt: new Date(), expertOtpHash: null, expertOtpExpiry: null },
+          include: CONTRACT_INCLUDE,
+        });
+      });
     return this.prisma.contract.update({
       where: { id },
       data: {
@@ -93,6 +109,7 @@ export class ContractRepository extends BaseRepository {
     });
   }
 
+  /** Finalizes a CRM contract, verifies the signing state, and grants assignment and benefits exactly once. */
   async studentSign(
     id: string,
     data: {
@@ -102,32 +119,81 @@ export class ContractRepository extends BaseRepository {
       clientAddress: string;
       clientPhone: string;
     },
+    expectedOtpHash?: string,
   ): Promise<Contract> {
-    return this.prisma.contract.update({
-      where: { id },
-      data: {
-        ...data,
-        status: ContractStatus.SIGNED,
-        studentSignedAt: new Date(),
-        studentOtpHash: null,
-        studentOtpExpiry: null,
-      },
-      include: CONTRACT_INCLUDE,
+    const linkedLead = await this.findLead(id);
+    if (!linkedLead) {
+      return this.prisma.contract.update({
+        where: { id },
+        data: {
+          ...data,
+          status: ContractStatus.SIGNED,
+          studentSignedAt: new Date(),
+          studentOtpHash: null,
+          studentOtpExpiry: null,
+        },
+        include: CONTRACT_INCLUDE,
+      });
+    }
+    return leadTransaction(this.prisma, async tx => {
+      const lead = await tx.lead.findUniqueOrThrow({ where: { contractId: id } });
+      const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
+      if (contract.status !== ContractStatus.PENDING_STUDENT || lead.status !== "CONTRACT_PENDING") throw new ConflictException("Contract has already changed");
+      if (expectedOtpHash && (contract.studentOtpHash !== expectedOtpHash || !contract.studentOtpExpiry || contract.studentOtpExpiry < new Date()))
+        throw new ConflictException("Signing code has changed or expired");
+      if (!lead.assignedExpertUserId || contract.signedByUserId !== lead.assignedExpertUserId) throw new ConflictException("Contract signer must match the assigned expert");
+      const expert = await tx.consultantProfile.findUnique({ where: { userId: lead.assignedExpertUserId } });
+      if (!expert) throw new ConflictException("Expert profile is missing");
+      const portrait = await tx.studentPortrait.findUniqueOrThrow({ where: { userId: contract.studentId } });
+      if (portrait.consultantProfileId && portrait.consultantProfileId !== expert.id) throw new ConflictException("Student is now assigned to another expert");
+      const signed = await tx.contract.update({
+        where: { id },
+        data: { ...data, status: ContractStatus.SIGNED, studentSignedAt: new Date(), studentOtpHash: null, studentOtpExpiry: null },
+        include: CONTRACT_INCLUDE,
+      });
+      await tx.studentPortrait.update({ where: { userId: contract.studentId }, data: { subscription: contract.subscriptionTier, consultantProfileId: expert.id } });
+      const totalSlots = TIER_SLOTS[contract.subscriptionTier];
+      if (totalSlots)
+        await tx.studentPackage.upsert({
+          where: { studentId_expertId: { studentId: contract.studentId, expertId: expert.id } },
+          create: { studentId: contract.studentId, expertId: expert.id, totalSlots },
+          update: { totalSlots: { increment: totalSlots } },
+        });
+      await tx.lead.update({ where: { id: lead.id }, data: { status: "CONVERTED", convertedAt: new Date() } });
+      await tx.leadActivity.create({
+        data: { leadId: lead.id, actorUserId: contract.studentId, type: "LEAD_CONVERTED", metadata: { contractId: id, studentId: contract.studentId } },
+      });
+      return signed;
     });
   }
 
+  /** Finds the CRM owner and status for a contract without loading a full lead card. */
+  findLead(contractId: string) {
+    return this.prisma.lead.findUnique({ where: { contractId }, select: { id: true, assignedExpertUserId: true, assignedSalesManagerId: true, status: true } });
+  }
+
+  /** Restricts a CRM contract to its assigned expert while preserving legacy contract access. */
+  async assertLeadExpert(contractId: string, userId?: number) {
+    const lead = await this.findLead(contractId);
+    if (lead && lead.assignedExpertUserId !== userId) throw new ForbiddenException("Only the assigned expert may manage this lead contract");
+  }
+
+  /** Updates contract terms, preventing CRM terms from changing after expert signature. */
   async updateMeta(id: string, data: { contractNumber?: string; price?: number; currency?: string; serviceStartDate?: Date; serviceEndDate?: Date }): Promise<Contract> {
-    return this.prisma.contract.update({
-      where: { id },
-      data: {
-        ...(data.contractNumber && { contractNumber: data.contractNumber }),
-        ...(data.price !== undefined && { price: data.price }),
-        ...(data.currency && { currency: data.currency }),
-        ...(data.serviceStartDate && { serviceStartDate: data.serviceStartDate }),
-        ...(data.serviceEndDate && { serviceEndDate: data.serviceEndDate }),
-      },
-      include: CONTRACT_INCLUDE,
-    });
+    const update = {
+      ...(data.contractNumber && { contractNumber: data.contractNumber }),
+      ...(data.price !== undefined && { price: data.price }),
+      ...(data.currency && { currency: data.currency }),
+      ...(data.serviceStartDate && { serviceStartDate: data.serviceStartDate }),
+      ...(data.serviceEndDate && { serviceEndDate: data.serviceEndDate }),
+    };
+    if (await this.findLead(id))
+      return leadTransaction(this.prisma, async tx => {
+        const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
+        if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("A signed lead contract cannot be changed");
+        return tx.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
+      });
+    return this.prisma.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
   }
 
   async isFullySigned(studentId: number): Promise<boolean> {

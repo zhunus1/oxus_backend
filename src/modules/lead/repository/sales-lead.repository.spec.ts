@@ -95,7 +95,7 @@ describe("SalesLeadRepository visibility and acceptance", () => {
       },
       notificationLog: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       leadActivity: { create: jest.fn().mockResolvedValue({ id: 12 }) },
-      lead: { update: jest.fn().mockResolvedValue(lead) },
+      lead: { findFirst: jest.fn().mockResolvedValue(lead), update: jest.fn().mockResolvedValue(lead) },
     };
     (prisma.$transaction as jest.Mock).mockImplementation(async operation => operation(tx));
 
@@ -112,6 +112,7 @@ describe("SalesLeadRepository visibility and acceptance", () => {
 
   it("does not mutate a completed callback", async () => {
     const tx = {
+      lead: { findFirst: jest.fn().mockResolvedValue({ id: 8, assignedSalesManagerId: 17 }) },
       leadCallback: {
         findFirst: jest.fn().mockResolvedValue({ id: 4, status: "COMPLETED" }),
         update: jest.fn(),

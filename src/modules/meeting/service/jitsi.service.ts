@@ -8,6 +8,7 @@ import { MeetingRepository } from "../repository/meeting.repository";
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
 
+/** Signs Jitsi/JaaS meeting tokens for authenticated users and CRM guests. */
 @Injectable()
 export class JitsiService {
   private readonly privateKey: Buffer;
@@ -27,6 +28,26 @@ export class JitsiService {
     if (!this.configService.get<string>("JITSI_APP_ID")) {
       throw new Error("JITSI_APP_ID env variable is not set");
     }
+  }
+
+  /** Signs a room-specific CRM token with explicit moderator rights and a bounded expiry. */
+  signLeadRoomToken(roomName: string, user: { id: string; name: string }, moderator: boolean, expiresAt: Date) {
+    const appId = this.configService.getOrThrow<string>("JITSI_APP_ID");
+    const rawKeyId = this.configService.getOrThrow<string>("JAAS_API_KEY_ID");
+    const kid = rawKeyId.includes("/") ? rawKeyId : `${appId}/${rawKeyId}`;
+    const token = jwt.sign(
+      {
+        aud: "jitsi",
+        iss: "chat",
+        sub: appId,
+        room: roomName,
+        context: { user: { ...user, moderator: moderator ? "true" : "false" }, features: { recording: false, livestreaming: false } },
+        exp: Math.floor(expiresAt.getTime() / 1000),
+      },
+      this.privateKey,
+      { algorithm: "RS256", header: { alg: "RS256", kid } },
+    );
+    return { appId, roomName, jwt: token, role: moderator ? "moderator" : "participant", expiresAt };
   }
 
   async generateToken(id: string, data: GenerateJitsiTokenDto) {

@@ -2,9 +2,19 @@ import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { ApplicationStatus, Prisma, ProcessStep } from "generated/prisma/client";
 import type { ExpertStudentsQueryDto } from "../api/dto/expert-students-query.dto";
+import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
 
+/** Queries expert student lists and enforces availability during assignment. */
 @Injectable()
 export class ExpertDashboardRepository extends BaseRepository {
+  private readonly availablePortraitWhere = {
+    consultantProfileId: null,
+    user: {
+      studentContracts: {
+        none: { status: { in: ["PENDING_EXPERT", "PENDING_STUDENT"] }, lead: { isNot: null } },
+      },
+    },
+  } satisfies Prisma.StudentPortraitWhereInput;
   private readonly expertStudentListInclude = {
     user: {
       select: {
@@ -67,10 +77,10 @@ export class ExpertDashboardRepository extends BaseRepository {
     };
   }
 
+  /** Excludes students reserved by an unsigned CRM contract from the shared assignment pool. */
   portraitWhereAvailable(query: ExpertStudentsQueryDto): Prisma.StudentPortraitWhereInput {
     return {
-      consultantProfileId: null,
-      user: this.buildStudentUserFilters(query),
+      AND: [this.availablePortraitWhere, { user: this.buildStudentUserFilters(query) }],
     };
   }
 
@@ -88,11 +98,15 @@ export class ExpertDashboardRepository extends BaseRepository {
     });
   }
 
+  /** Claims an available portrait transactionally, rechecking pending CRM reservations. */
   async assignPortraitToExpert(portraitId: number, consultantProfileId: number) {
-    const result = await this.prisma.studentPortrait.updateMany({
-      where: { id: portraitId, consultantProfileId: null },
-      data: { consultantProfileId },
-    });
+    // Serialize with CRM contract preparation, including reuse of an existing portrait.
+    const result = await leadTransaction(this.prisma, tx =>
+      tx.studentPortrait.updateMany({
+        where: { id: portraitId, ...this.availablePortraitWhere },
+        data: { consultantProfileId },
+      }),
+    );
     return result.count;
   }
 

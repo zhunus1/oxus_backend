@@ -9,6 +9,7 @@ import { SALES_MANAGER_ROLE } from "../domain/lead.constants";
 
 const UNASSIGNED_ROOM = "sales:unassigned";
 
+/** Authenticates Sales and Expert sockets and emits CRM changes to role-specific user rooms. */
 @WebSocketGateway({
   namespace: "/sales",
   cors: { origin: validateCorsOrigin, credentials: true },
@@ -74,6 +75,13 @@ export class LeadRealtimeGateway {
 
   emitExpertCallRequested(expertUserId: number, call: unknown) {
     this.server?.to(this.expertRoom(expertUserId)).emit("expert-call.created", call);
+  }
+
+  /** Sends card and counter invalidations to one expert without broadcasting questionnaire contents. */
+  emitExpertLeadUpdated(expertUserId: number, leadId: number) {
+    // Do not broadcast questionnaire or health data. Authorized clients refetch the card.
+    this.server?.to(this.expertRoom(expertUserId)).emit("expert-lead.updated", { leadId });
+    this.server?.to(this.expertRoom(expertUserId)).emit("expert-lead.summary.updated", { leadId });
   }
 
   emitExpertCallUpdated(expertUserId: number, managerId: number, call: unknown) {

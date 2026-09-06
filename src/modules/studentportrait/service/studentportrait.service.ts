@@ -11,11 +11,9 @@ import { UpdatePortraitTestDto } from "../api/dto/update-portrait-test.dto";
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
 
-const TIER_SLOTS: Partial<Record<SubscriptionTier, number>> = {
-  [SubscriptionTier.AI_ROADMAP]: 3,
-  [SubscriptionTier.EXPERT_MENTORSHIP]: 10,
-};
+import { TIER_SLOTS } from "../domain/contract-benefits";
 
+/** Manages student profiles and activates the benefits associated with signed contracts. */
 @Injectable()
 export class StudentPortraitService {
   private readonly logger = new Logger(StudentPortraitService.name);

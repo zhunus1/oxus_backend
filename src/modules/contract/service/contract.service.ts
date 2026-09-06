@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import { LeadRealtimeGateway } from "src/modules/lead/realtime/lead-realtime.gateway";
+import { BadRequestException, ForbiddenException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { ContractRepository } from "../repository/contract.repository";
 import { OtpService } from "./otp.service";
 import { PdfService } from "./pdf.service";
@@ -13,6 +14,7 @@ import messages from "src/configs/messages";
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
 
+/** Coordinates contract validation, signing, benefits, and participant notifications. */
 @Injectable()
 export class ContractService {
   private readonly entity = "Contract";
@@ -25,6 +27,7 @@ export class ContractService {
     private readonly mailService: MailService,
     private readonly portraitService: StudentPortraitService,
     private readonly userJourneyLog: UserJourneyLogService,
+    @Optional() private readonly leadRealtime?: LeadRealtimeGateway,
   ) {}
 
   // ─── Student ──────────────────────────────────────────────────────────────
@@ -64,6 +67,7 @@ export class ContractService {
     }
   }
 
+  /** Verifies the student signing code and applies CRM conversion through the transactional repository. */
   async signByStudent(contractId: string, userId: number, dto: SignStudentContractDto) {
     try {
       const contract = await this.repo.findById(contractId);
@@ -81,23 +85,33 @@ export class ContractService {
       const valid = await this.otpService.verify(dto.otp, contract.studentOtpHash);
       if (!valid) throw new BadRequestException("Invalid OTP");
 
-      const signed = await this.repo.studentSign(contractId, {
-        clientFullName: dto.clientFullName,
-        studentName: dto.studentName,
-        clientIin: dto.clientIin,
-        clientAddress: dto.clientAddress,
-        clientPhone: dto.clientPhone,
-      });
+      const signed = await this.repo.studentSign(
+        contractId,
+        {
+          clientFullName: dto.clientFullName,
+          studentName: dto.studentName,
+          clientIin: dto.clientIin,
+          clientAddress: dto.clientAddress,
+          clientPhone: dto.clientPhone,
+        },
+        contract.studentOtpHash,
+      );
 
-      // Resolve the expert's consultant profile (may not exist for admin signers)
-      const consultantProfile = signed.signedByUserId
-        ? await (this.repo as any).prisma.consultantProfile.findUnique({
-            where: { userId: signed.signedByUserId },
-            select: { id: true },
-          })
-        : null;
+      const linkedLead = await this.repo.findLead(contractId);
+      if (linkedLead) {
+        if (linkedLead.assignedExpertUserId) this.leadRealtime?.emitExpertLeadUpdated(linkedLead.assignedExpertUserId, linkedLead.id);
+        if (linkedLead.assignedSalesManagerId) this.leadRealtime?.emitLeadUpdated(linkedLead.assignedSalesManagerId, linkedLead);
+      } else {
+        // Resolve the expert's consultant profile (may not exist for admin signers)
+        const consultantProfile = signed.signedByUserId
+          ? await (this.repo as any).prisma.consultantProfile.findUnique({
+              where: { userId: signed.signedByUserId },
+              select: { id: true },
+            })
+          : null;
 
-      await this.portraitService.activateContractBenefits(signed.studentId, signed.subscriptionTier, consultantProfile?.id ?? null);
+        await this.portraitService.activateContractBenefits(signed.studentId, signed.subscriptionTier, consultantProfile?.id ?? null);
+      }
 
       // Generate PDF and send to both parties
       this.sendSignedContractEmails(signed).catch(e => this.logger.error("Failed to send signed contract emails", e));
@@ -130,10 +144,12 @@ export class ContractService {
     }
   }
 
-  async getContractByStudentId(studentId: number) {
+  /** Returns the student contract after checking assigned-expert access for CRM leads. */
+  async getContractByStudentId(studentId: number, expertId?: number) {
     try {
       const contract = await this.repo.findByStudentId(studentId);
       if (!contract) throw new NotFoundException(messages.NOT_FOUND(this.entity));
+      if (expertId) await this.repo.assertLeadExpert(contract.id, expertId);
       return contract;
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -142,9 +158,10 @@ export class ContractService {
     }
   }
 
-  async getAllContracts(status?: ContractStatus) {
+  /** Lists contracts with optional status and expert visibility filters. */
+  async getAllContracts(status?: ContractStatus, expertId?: number) {
     try {
-      return await this.repo.findAllByStatus(status);
+      return await this.repo.findAllByStatus(status, expertId);
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error(messages.DATABASE_FETCH_ERROR(this.entity), err, err?.stack);
@@ -152,8 +169,10 @@ export class ContractService {
     }
   }
 
+  /** Checks contract ownership and sends the existing expert signing notification code. */
   async sendExpertOtp(contractId: string, userId: number) {
     try {
+      await this.repo.assertLeadExpert(contractId, userId);
       const contract = await this.repo.findById(contractId);
       if (!contract) throw new NotFoundException(messages.NOT_FOUND(this.entity));
       if (contract.status !== ContractStatus.PENDING_EXPERT) {
@@ -202,13 +221,16 @@ export class ContractService {
     }
   }
 
-  async updateMeta(contractId: string, dto: UpdateContractMetaDto) {
+  /** Checks expert access and validates contract term changes before persistence. */
+  async updateMeta(contractId: string, dto: UpdateContractMetaDto, userId?: number) {
     try {
+      await this.repo.assertLeadExpert(contractId, userId);
       const contract = await this.repo.findById(contractId);
       if (!contract) throw new NotFoundException(messages.NOT_FOUND(this.entity));
       if (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.PAID) {
         throw new BadRequestException("Cannot update a fully signed contract");
       }
+      if ((await this.repo.findLead(contractId)) && contract.status !== ContractStatus.PENDING_EXPERT) throw new BadRequestException("A signed lead contract cannot be changed");
       return await this.repo.updateMeta(contractId, {
         contractNumber: dto.contractNumber,
         price: dto.price,

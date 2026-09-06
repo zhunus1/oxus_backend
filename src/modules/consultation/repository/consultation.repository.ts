@@ -1,4 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { ConsultationActor, consultationScope } from "../domain/consultation-access";
+import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "src/database/prisma.service";
 import { CreateConsultationDto } from "../api/dto/create-consultation.dto";
 import { Consultation, ConsultationStatus, LeadExpertCallStatus, MeetingStatus, Prisma } from "generated/prisma/client";
@@ -6,6 +8,31 @@ import { UpdateConsultationDto } from "../api/dto/update-consultation.dto";
 import { ConsultationQueryDto } from "../api/dto/consultation-query.dto";
 import { v4 as uuidv4 } from "uuid";
 import { lockExpertBookings } from "src/common/database/expert-booking-lock";
+
+// Preserve existing public user fields, excluding credentials from every consultation response.
+const consultationInclude = {
+  client: {
+    select: {
+      id: true,
+      firstname: true,
+      lastname: true,
+      email: true,
+      phoneNumber: true,
+      roleId: true,
+      hasAcceptedTerms: true,
+      termsAcceptedAt: true,
+      timezone: true,
+      countryId: true,
+      citizenshipCountryId: true,
+      organisationId: true,
+      createdAt: true,
+      updatedAt: true,
+      deletedAt: true,
+    },
+  },
+  consultant: { include: { user: { select: { id: true, email: true, firstname: true, lastname: true } } } },
+  meeting: true,
+} satisfies Prisma.ConsultationInclude;
 
 const expertMeetingInclude = {
   client: {
@@ -33,10 +60,12 @@ const expertMeetingInclude = {
   meeting: true,
 } as const;
 
+/** Persists participant-scoped consultations under the shared expert booking lock. */
 @Injectable()
 export class ConsultationRepository {
   constructor(private prisma: PrismaService) {}
 
+  /** Builds the consultation and linked meeting as one nested write without credential fields. */
   private createArgs(
     data: CreateConsultationDto & {
       packageId?: number;
@@ -61,26 +90,35 @@ export class ConsultationRepository {
             expertId: data.expertId,
             startTime,
             endTime,
-            status: MeetingStatus.SCHEDULED,
+            status:
+              data.status === ConsultationStatus.CANCELLED ? MeetingStatus.CANCELLED : data.status === ConsultationStatus.DONE ? MeetingStatus.COMPLETED : MeetingStatus.SCHEDULED,
           },
         },
       },
-      include: {
-        client: true,
-        consultant: true,
-        meeting: true,
-      },
+      include: consultationInclude,
     };
   }
 
-  async create(
-    data: CreateConsultationDto & {
-      packageId?: number;
-      studentId?: number;
-      expertId?: number;
-    },
-  ): Promise<Consultation> {
-    return this.prisma.consultation.create(this.createArgs(data));
+  /** Creates a consultation for an authorized actor, rechecking assignment and slot availability atomically. */
+  async create(data: CreateConsultationDto, actor: ConsultationActor): Promise<Consultation> {
+    consultationScope(actor);
+    return leadTransaction(this.prisma, async tx => {
+      const expert = await tx.consultantProfile.findUnique({ where: { id: data.consultantId }, select: { userId: true } });
+      if (!expert) throw new NotFoundException("Expert profile not found");
+      if (actor.roleCode !== "ADMIN") {
+        if (actor.roleCode === "EXPERT" ? expert.userId !== actor.id : data.clientId !== actor.id) throw new ForbiddenException("Consultation does not belong to you");
+        const portrait = await tx.studentPortrait.findFirst({ where: { userId: data.clientId, consultantProfileId: data.consultantId }, select: { id: true } });
+        if (!portrait) throw new ForbiddenException("Student is not assigned to this expert");
+        if (actor.roleCode !== "EXPERT" && data.status && data.status !== ConsultationStatus.REQUESTED) throw new ForbiddenException("Students can only request consultations");
+      }
+      const startTime = new Date(data.startTime),
+        endTime = new Date(data.endTime);
+      this.assertInterval(startTime, endTime);
+      await lockExpertBookings(tx, expert.userId);
+      if (data.status !== ConsultationStatus.CANCELLED && (await this.slotOccupied(tx, expert.userId, data.consultantId, startTime, endTime)))
+        throw new ConflictException("This expert slot is already booked");
+      return tx.consultation.create(this.createArgs(data));
+    });
   }
 
   async findStudentPackage(studentId: number, expertId: number) {
@@ -117,32 +155,49 @@ export class ConsultationRepository {
     });
   }
 
-  async update(id: number, data: UpdateConsultationDto): Promise<Consultation> {
-    const updateData: Prisma.ConsultationUpdateInput = {};
-    if (data.startTime) updateData.startTime = new Date(data.startTime);
-    if (data.endTime) updateData.endTime = new Date(data.endTime);
-    if (data.status) updateData.status = data.status;
-
-    return this.prisma.consultation.update({
-      where: { id },
-      data: updateData,
-      include: {
-        client: true,
-        consultant: true,
-        meeting: true,
-      },
+  /** Rechecks participant access and availability during edits, including reactivation of cancelled meetings. */
+  async update(id: number, data: UpdateConsultationDto, actor: ConsultationActor, expectedStatus?: ConsultationStatus): Promise<Consultation> {
+    const scope = consultationScope(actor);
+    return leadTransaction(this.prisma, async tx => {
+      const current = await tx.consultation.findFirst({ where: { id, ...scope }, include: { consultant: { select: { userId: true } } } });
+      if (!current) throw new NotFoundException("Consultation not found");
+      if (expectedStatus && current.status !== expectedStatus) throw new ConflictException("Consultation has already changed");
+      if (!["ADMIN", "EXPERT"].includes(actor.roleCode)) {
+        if (data.status && data.status !== ConsultationStatus.REQUESTED && data.status !== ConsultationStatus.CANCELLED)
+          throw new ForbiddenException("Students cannot confirm or complete consultations");
+        if (current.status !== ConsultationStatus.REQUESTED && (data.startTime || data.endTime || data.status === ConsultationStatus.REQUESTED))
+          throw new ConflictException("Only a pending consultation can be rescheduled by the student");
+      }
+      const startTime = data.startTime ? new Date(data.startTime) : current.startTime;
+      const endTime = data.endTime ? new Date(data.endTime) : current.endTime;
+      const status = data.status ?? current.status;
+      this.assertInterval(startTime, endTime);
+      await lockExpertBookings(tx, current.consultant.userId);
+      if (status !== ConsultationStatus.CANCELLED && (await this.slotOccupied(tx, current.consultant.userId, current.consultantProfileId, startTime, endTime, id)))
+        throw new ConflictException("This expert slot is already booked");
+      await tx.meeting.updateMany({
+        where: { consultationId: id },
+        data: {
+          startTime,
+          endTime,
+          status: status === ConsultationStatus.CANCELLED ? MeetingStatus.CANCELLED : status === ConsultationStatus.DONE ? MeetingStatus.COMPLETED : MeetingStatus.SCHEDULED,
+        },
+      });
+      return tx.consultation.update({
+        where: { id },
+        data: {
+          startTime,
+          endTime,
+          status,
+        },
+        include: consultationInclude,
+      });
     });
   }
 
-  async findById(id: number): Promise<Consultation | null> {
-    return this.prisma.consultation.findUnique({
-      where: { id },
-      include: {
-        client: true,
-        consultant: true,
-        meeting: true,
-      },
-    });
+  /** Loads a consultation with public participant fields; external callers must supply their identity. */
+  async findById(id: number, actor?: ConsultationActor): Promise<Consultation | null> {
+    return this.prisma.consultation.findFirst({ where: { id, ...(actor ? consultationScope(actor) : {}) }, include: consultationInclude });
   }
 
   async findByClientId(clientId: number) {
@@ -168,10 +223,11 @@ export class ConsultationRepository {
     return this.prisma.studentPortrait.findUnique({ where: { userId } });
   }
 
-  async findMany(query: ConsultationQueryDto) {
+  /** Applies caller visibility together with filters, so query parameters cannot widen access. */
+  async findMany(query: ConsultationQueryDto, actor: ConsultationActor) {
     const { clientId, consultantId, status, startDate, endDate, skip, take } = query;
 
-    const where: Prisma.ConsultationWhereInput = {};
+    const where: Prisma.ConsultationWhereInput = { AND: [consultationScope(actor)] };
 
     if (clientId) where.clientId = clientId;
     if (consultantId) where.consultantProfileId = consultantId;
@@ -187,15 +243,12 @@ export class ConsultationRepository {
       where,
       skip,
       take,
-      include: {
-        client: true,
-        consultant: true,
-        meeting: true,
-      },
+      include: consultationInclude,
       orderBy: { startTime: "asc" },
     });
   }
 
+  /** Checks an interval for legacy callers without loading private participant credentials. */
   async findOverlappingConsultation(consultantProfileId: number, startTime: Date, endTime: Date) {
     return this.prisma.consultation.findFirst({
       where: {
@@ -210,14 +263,11 @@ export class ConsultationRepository {
           gt: startTime,
         },
       },
-      include: {
-        client: true,
-        consultant: true,
-        meeting: true,
-      },
+      include: consultationInclude,
     });
   }
 
+  /** Books an assigned student consultation and consumes its package slot under the shared transaction lock. */
   async createIfExpertAvailable(
     data: CreateConsultationDto & {
       packageId?: number;
@@ -226,31 +276,12 @@ export class ConsultationRepository {
       expertUserId: number;
     },
   ) {
-    return this.prisma.$transaction(async tx => {
+    return leadTransaction(this.prisma, async tx => {
       await lockExpertBookings(tx, data.expertUserId);
-
-      const startTime = new Date(data.startTime);
-      const endTime = new Date(data.endTime);
-      const [consultation, leadCall] = await Promise.all([
-        tx.consultation.findFirst({
-          where: {
-            consultantProfileId: data.consultantId,
-            status: { not: ConsultationStatus.CANCELLED },
-            startTime: { lt: endTime },
-            endTime: { gt: startTime },
-          },
-        }),
-        tx.leadExpertCall.findFirst({
-          where: {
-            expertUserId: data.expertUserId,
-            status: { in: [LeadExpertCallStatus.REQUESTED, LeadExpertCallStatus.CONFIRMED] },
-            startTime: { lt: endTime },
-            endTime: { gt: startTime },
-          },
-        }),
-      ]);
-
-      if (consultation || leadCall) return null;
+      const startTime = new Date(data.startTime),
+        endTime = new Date(data.endTime);
+      this.assertInterval(startTime, endTime);
+      if (await this.slotOccupied(tx, data.expertUserId, data.consultantId, startTime, endTime)) return null;
 
       const created = await tx.consultation.create(this.createArgs(data));
 
@@ -263,6 +294,31 @@ export class ConsultationRepository {
 
       return created;
     });
+  }
+
+  /** Rejects invalid or reversed intervals before reading or reserving availability. */
+  private assertInterval(startTime: Date, endTime: Date) {
+    if (!Number.isFinite(startTime.getTime()) || !Number.isFinite(endTime.getTime()) || startTime >= endTime)
+      throw new BadRequestException("startTime must be earlier than endTime");
+  }
+
+  /** Checks ordinary and CRM bookings while the caller holds the expert transaction lock. */
+  private async slotOccupied(tx: Prisma.TransactionClient, expertUserId: number, profileId: number, startTime: Date, endTime: Date, excludeId?: number) {
+    const consultation = await tx.consultation.findFirst({
+      where: {
+        consultantProfileId: profileId,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+        status: { not: ConsultationStatus.CANCELLED },
+        startTime: { lt: endTime },
+        endTime: { gt: startTime },
+      },
+      select: { id: true },
+    });
+    if (consultation) return true;
+    return !!(await tx.leadExpertCall.findFirst({
+      where: { expertUserId, status: { in: [LeadExpertCallStatus.REQUESTED, LeadExpertCallStatus.CONFIRMED] }, startTime: { lt: endTime }, endTime: { gt: startTime } },
+      select: { id: true },
+    }));
   }
 
   async findByConsultantProfileId(consultantProfileId: number, query: ConsultationQueryDto) {

@@ -21,6 +21,7 @@ describe("LeadExpertCallService", () => {
   const emitLeadUpdated = jest.fn();
   const emitNotification = jest.fn();
   const realtime = {
+    emitExpertLeadUpdated: jest.fn(),
     emitExpertCallRequested,
     emitExpertCallUpdated,
     emitLeadUpdated,

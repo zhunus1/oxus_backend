@@ -14,6 +14,7 @@ jest.mock("generated/prisma/client", () => ({
     CONFIRMED: "CONFIRMED",
   },
   MeetingStatus: { SCHEDULED: "SCHEDULED" },
+  Prisma: { TransactionIsolationLevel: { Serializable: "Serializable" } },
 }));
 
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
@@ -115,6 +116,7 @@ describe("ConsultationRepository expert meeting lists", () => {
 
     expect(transactionClient.$executeRaw).toHaveBeenCalledTimes(1);
     expect(transactionClient.leadExpertCall.findFirst).toHaveBeenCalledWith({
+      select: { id: true },
       where: expect.objectContaining({
         expertUserId: 23,
         status: { in: ["REQUESTED", "CONFIRMED"] },

@@ -8,7 +8,9 @@ import { PrismaModule } from "src/database/prisma.module";
 import { ConsultationModule } from "../consultation/consultation.module";
 import { UserJourneyModule } from "src/modules/user-journey/user-journey.module";
 
+/** Provides meeting workflows and the shared Jitsi token signer. */
 @Module({
+  exports: [JitsiService],
   controllers: [MeetingController],
   providers: [JitsiService, MeetingRepository],
   imports: [ConfigModule, JwtModule, PrismaModule, ConsultationModule, UserJourneyModule],

@@ -85,7 +85,7 @@ describe("SalesLeadService", () => {
 
   it("returns a conflict instead of a 500 after an exhausted serialization retry", async () => {
     findOwnedById.mockResolvedValue({ id: 8 });
-    updateCallback.mockRejectedValue({ code: "P2034" });
+    updateCallback.mockRejectedValue(new ConflictException("The lead changed concurrently"));
 
     await expect(service.updateCallback(17, 8, 4, { comment: "Concurrent edit" })).rejects.toBeInstanceOf(ConflictException);
   });

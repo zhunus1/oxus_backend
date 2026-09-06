@@ -10,15 +10,18 @@ import type { UserRequest } from "src/modules/admin/auth/api/dtos/user-request";
 import { Roles } from "src/modules/admin/auth/rbac/roles.decorator";
 import { RolesGuard } from "src/modules/admin/auth/rbac/roles.guard";
 
+/** Passes authenticated identities to every ordinary consultation read and mutation. */
 @ApiTags("Consultation")
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles("ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY")
 @Controller("consultations")
 export class ConsultationController {
   constructor(private readonly consultationService: ConsultationService) {}
 
+  /** Creates a consultation after participant and expert-assignment checks. */
   @Post()
-  async create(@Body() dto: CreateConsultationDto) {
-    return this.consultationService.create(dto);
+  async create(@Req() req: UserRequest, @Body() dto: CreateConsultationDto) {
+    return this.consultationService.create(dto, req.user);
   }
 
   @ApiOperation({ summary: "Book a consultation with assigned expert" })
@@ -35,19 +38,22 @@ export class ConsultationController {
     return this.consultationService.findMyConsultations(req.user.id);
   }
 
+  /** Updates a consultation only for an authorized participant or administrator. */
   @Patch(":id")
-  async update(@Param("id", ParseIntPipe) id: number, @Body() dto: UpdateConsultationDto) {
-    return this.consultationService.update(id, dto);
+  async update(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Body() dto: UpdateConsultationDto) {
+    return this.consultationService.update(id, dto, req.user);
   }
 
+  /** Loads one consultation within the authenticated user scope. */
   @Get(":id")
-  async findById(@Param("id", ParseIntPipe) id: number) {
-    return this.consultationService.findById(id);
+  async findById(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.consultationService.findById(id, req.user);
   }
 
+  /** Lists consultations with filters intersected with the authenticated user scope. */
   @Get()
-  async findMany(@Query() query: ConsultationQueryDto) {
-    return this.consultationService.findMany(query);
+  async findMany(@Req() req: UserRequest, @Query() query: ConsultationQueryDto) {
+    return this.consultationService.findMany(query, req.user);
   }
 
   @ApiOperation({ summary: "Get my meetings as expert" })
