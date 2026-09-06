@@ -21,6 +21,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:sales-v2:http": "nest build && node --import tsx --test --test-concurrency=1 test/sales-expert-v2-http.test.ts",
+    "test:sales-v2:reliability": "nest build && node --import tsx --test --test-concurrency=1 test/sales-contract-reliability.test.ts",
     "test:sales-v2:regression": "node --import tsx --test --test-concurrency=1 test/sales-expert-v2-regression.test.ts"
   },
   "dependencies": {

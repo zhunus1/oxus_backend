@@ -2,13 +2,12 @@ import { LeadRealtimeGateway } from "src/modules/lead/realtime/lead-realtime.gat
 import { BadRequestException, ForbiddenException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { ContractRepository } from "../repository/contract.repository";
 import { OtpService } from "./otp.service";
-import { PdfService } from "./pdf.service";
+import { ContractNotificationService } from "./contract-notification.service";
 import { StudentPortraitService } from "src/modules/studentportrait/service/studentportrait.service";
 import { CreateContractForStudentDto } from "../api/dto/create-contract-for-student.dto";
 import { SignStudentContractDto } from "../api/dto/sign-student-contract.dto";
 import { UpdateContractMetaDto } from "../api/dto/update-contract-meta.dto";
 import { ContractStatus } from "generated/prisma/enums";
-import { MailService } from "src/modules/mail/mail.service";
 import messages from "src/configs/messages";
 
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
@@ -23,8 +22,7 @@ export class ContractService {
   constructor(
     private readonly repo: ContractRepository,
     private readonly otpService: OtpService,
-    private readonly pdfService: PdfService,
-    private readonly mailService: MailService,
+    private readonly notifications: ContractNotificationService,
     private readonly portraitService: StudentPortraitService,
     private readonly userJourneyLog: UserJourneyLogService,
     @Optional() private readonly leadRealtime?: LeadRealtimeGateway,
@@ -113,8 +111,7 @@ export class ContractService {
         await this.portraitService.activateContractBenefits(signed.studentId, signed.subscriptionTier, consultantProfile?.id ?? null);
       }
 
-      // Generate PDF and send to both parties
-      this.sendSignedContractEmails(signed).catch(e => this.logger.error("Failed to send signed contract emails", e));
+      this.notifications.enqueue();
 
       void this.userJourneyLog.logEvent(userId, USER_JOURNEY_EVENT.CONTRACT_SIGNED, {
         contractId,
@@ -199,6 +196,7 @@ export class ContractService {
     }
   }
 
+  /** Commits the signature and wakes durable email delivery without waiting for SMTP or Redis. */
   async signByExpert(contractId: string, userId: number) {
     try {
       const contract = await this.repo.findById(contractId);
@@ -207,13 +205,9 @@ export class ContractService {
         throw new BadRequestException("Contract is not pending expert signature");
       }
 
-      const signed = await this.repo.expertSign(contractId, userId);
-
-      // Notify student that contract is ready to sign
-      const student = (signed as any).student;
-      this.notifyStudentContractReady(student).catch(e => this.logger.error("Failed to notify student", e));
-
-      return { message: "Contract signed by expert, student notified", status: ContractStatus.PENDING_STUDENT };
+      await this.repo.expertSign(contractId, userId);
+      this.notifications.enqueue();
+      return { message: "Contract signed by expert, student notification queued", status: ContractStatus.PENDING_STUDENT };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error("Error signing contract (expert)", err, err?.stack);
@@ -259,47 +253,5 @@ export class ContractService {
 
   async isFullySigned(studentId: number): Promise<boolean> {
     return this.repo.isFullySigned(studentId);
-  }
-
-  // ─── Private helpers ──────────────────────────────────────────────────────
-
-  private async notifyStudentContractReady(student: { email: string; firstname: string }) {
-    await this.mailService.sendMail(
-      student.email,
-      "Ваш договор готов к подписанию — AcademicApply",
-      `Договор готов. Войдите в личный кабинет и подпишите его в разделе «Профиль».`,
-      `<p>Здравствуйте, <strong>${student.firstname}</strong>!</p>
-       <p>Ваш договор об оказании консалтинговых услуг с ТОО «OXUS GLOBAL STUDENT MOBILITY» готов к подписанию.</p>
-       <p>Пожалуйста, войдите в <a href="${process.env.FRONTEND_URL ?? "https://oxusedu.com"}/profile">личный кабинет</a> и ознакомьтесь с договором в разделе «Профиль».</p>`,
-    );
-  }
-
-  private async sendSignedContractEmails(contract: any) {
-    const pdfBuffer = await this.pdfService.generatePdf(contract);
-    const attachments = [{ filename: `Договор_${contract.contractNumber}.pdf`, content: pdfBuffer, contentType: "application/pdf" }];
-
-    const student = contract.student;
-    const expert = contract.signedByUser;
-
-    await Promise.all([
-      this.mailService.sendMail(
-        student.email,
-        `Договор №${contract.contractNumber} подписан — Oxusedu`,
-        `Договор подписан обеими сторонами. Копия во вложении.`,
-        `<p>Здравствуйте, <strong>${student.firstname}</strong>!</p>
-         <p>Договор №<strong>${contract.contractNumber}</strong> успешно подписан обеими сторонами. Копия прилагается.</p>`,
-        attachments,
-      ),
-      expert
-        ? this.mailService.sendMail(
-            expert.email,
-            `Договор №${contract.contractNumber} подписан студентом — Oxusedu`,
-            `Студент подписал договор. Копия во вложении.`,
-            `<p>Здравствуйте, <strong>${expert.firstname}</strong>!</p>
-             <p>Студент <strong>${student.firstname} ${student.lastname}</strong> подписал договор №<strong>${contract.contractNumber}</strong>. Копия прилагается.</p>`,
-            attachments,
-          )
-        : Promise.resolve(),
-    ]);
   }
 }

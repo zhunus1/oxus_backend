@@ -1,11 +1,12 @@
+import { recordContractEmails } from "../domain/contract-emails";
 import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
 import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
-import { ConflictException, ForbiddenException, Injectable } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { Contract, ContractStatus } from "generated/prisma/client";
 import { CreateContractForStudentDto } from "../api/dto/create-contract-for-student.dto";
 
-const CONTRACT_INCLUDE = {
+export const CONTRACT_INCLUDE = {
   student: { select: { id: true, firstname: true, lastname: true, email: true, phoneNumber: true } },
   signedByUser: { select: { id: true, firstname: true, lastname: true, email: true } },
 } as const;
@@ -83,29 +84,20 @@ export class ContractRepository extends BaseRepository {
     });
   }
 
-  /** Records the expert signature; CRM contracts must still be waiting for expert signature. */
+  /** Atomically records the expert signature and durable student notification after checking ownership. */
   async expertSign(id: string, expertUserId: number): Promise<Contract> {
-    await this.assertLeadExpert(id, expertUserId);
-    if (await this.findLead(id))
-      return leadTransaction(this.prisma, async tx => {
-        const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
-        if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("Contract has already changed");
-        return tx.contract.update({
-          where: { id },
-          data: { signedByUserId: expertUserId, status: ContractStatus.PENDING_STUDENT, expertSignedAt: new Date(), expertOtpHash: null, expertOtpExpiry: null },
-          include: CONTRACT_INCLUDE,
-        });
+    return leadTransaction(this.prisma, async tx => {
+      const lead = await tx.lead.findUnique({ where: { contractId: id } });
+      if (lead && lead.assignedExpertUserId !== expertUserId) throw new ForbiddenException("Only the assigned expert may manage this lead contract");
+      const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
+      if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("Contract has already changed");
+      const signed = await tx.contract.update({
+        where: { id },
+        data: { signedByUserId: expertUserId, status: ContractStatus.PENDING_STUDENT, expertSignedAt: new Date(), expertOtpHash: null, expertOtpExpiry: null },
+        include: CONTRACT_INCLUDE,
       });
-    return this.prisma.contract.update({
-      where: { id },
-      data: {
-        signedByUserId: expertUserId,
-        status: ContractStatus.PENDING_STUDENT,
-        expertSignedAt: new Date(),
-        expertOtpHash: null,
-        expertOtpExpiry: null,
-      },
-      include: CONTRACT_INCLUDE,
+      await recordContractEmails(tx, signed, "CONTRACT_READY");
+      return signed;
     });
   }
 
@@ -121,26 +113,21 @@ export class ContractRepository extends BaseRepository {
     },
     expectedOtpHash?: string,
   ): Promise<Contract> {
-    const linkedLead = await this.findLead(id);
-    if (!linkedLead) {
-      return this.prisma.contract.update({
-        where: { id },
-        data: {
-          ...data,
-          status: ContractStatus.SIGNED,
-          studentSignedAt: new Date(),
-          studentOtpHash: null,
-          studentOtpExpiry: null,
-        },
-        include: CONTRACT_INCLUDE,
-      });
-    }
     return leadTransaction(this.prisma, async tx => {
-      const lead = await tx.lead.findUniqueOrThrow({ where: { contractId: id } });
+      const lead = await tx.lead.findUnique({ where: { contractId: id } });
       const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
-      if (contract.status !== ContractStatus.PENDING_STUDENT || lead.status !== "CONTRACT_PENDING") throw new ConflictException("Contract has already changed");
+      if (contract.status !== ContractStatus.PENDING_STUDENT || (lead && lead.status !== "CONTRACT_PENDING")) throw new ConflictException("Contract has already changed");
       if (expectedOtpHash && (contract.studentOtpHash !== expectedOtpHash || !contract.studentOtpExpiry || contract.studentOtpExpiry < new Date()))
         throw new ConflictException("Signing code has changed or expired");
+      if (!lead) {
+        const signed = await tx.contract.update({
+          where: { id },
+          data: { ...data, status: ContractStatus.SIGNED, studentSignedAt: new Date(), studentOtpHash: null, studentOtpExpiry: null },
+          include: CONTRACT_INCLUDE,
+        });
+        await recordContractEmails(tx, signed, "CONTRACT_SIGNED_COPY");
+        return signed;
+      }
       if (!lead.assignedExpertUserId || contract.signedByUserId !== lead.assignedExpertUserId) throw new ConflictException("Contract signer must match the assigned expert");
       const expert = await tx.consultantProfile.findUnique({ where: { userId: lead.assignedExpertUserId } });
       if (!expert) throw new ConflictException("Expert profile is missing");
@@ -151,6 +138,7 @@ export class ContractRepository extends BaseRepository {
         data: { ...data, status: ContractStatus.SIGNED, studentSignedAt: new Date(), studentOtpHash: null, studentOtpExpiry: null },
         include: CONTRACT_INCLUDE,
       });
+      await recordContractEmails(tx, signed, "CONTRACT_SIGNED_COPY");
       await tx.studentPortrait.update({ where: { userId: contract.studentId }, data: { subscription: contract.subscriptionTier, consultantProfileId: expert.id } });
       const totalSlots = TIER_SLOTS[contract.subscriptionTier];
       if (totalSlots)
@@ -178,7 +166,7 @@ export class ContractRepository extends BaseRepository {
     if (lead && lead.assignedExpertUserId !== userId) throw new ForbiddenException("Only the assigned expert may manage this lead contract");
   }
 
-  /** Updates contract terms, preventing CRM terms from changing after expert signature. */
+  /** Validates merged dates under serializable isolation and prevents changes to signed CRM terms. */
   async updateMeta(id: string, data: { contractNumber?: string; price?: number; currency?: string; serviceStartDate?: Date; serviceEndDate?: Date }): Promise<Contract> {
     const update = {
       ...(data.contractNumber && { contractNumber: data.contractNumber }),
@@ -187,13 +175,17 @@ export class ContractRepository extends BaseRepository {
       ...(data.serviceStartDate && { serviceStartDate: data.serviceStartDate }),
       ...(data.serviceEndDate && { serviceEndDate: data.serviceEndDate }),
     };
-    if (await this.findLead(id))
-      return leadTransaction(this.prisma, async tx => {
-        const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
-        if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("A signed lead contract cannot be changed");
-        return tx.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
-      });
-    return this.prisma.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
+    return leadTransaction(this.prisma, async tx => {
+      const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
+      const lead = await tx.lead.findUnique({ where: { contractId: id }, select: { id: true } });
+      if (lead && contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("A signed lead contract cannot be changed");
+      if (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.PAID) throw new BadRequestException("Cannot update a fully signed contract");
+      const start = data.serviceStartDate ?? contract.serviceStartDate;
+      const end = data.serviceEndDate ?? contract.serviceEndDate;
+      if ((start && !Number.isFinite(start.getTime())) || (end && !Number.isFinite(end.getTime())) || (start && end && end <= start))
+        throw new BadRequestException("Service end date must be after service start date");
+      return tx.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
+    });
   }
 
   async isFullySigned(studentId: number): Promise<boolean> {

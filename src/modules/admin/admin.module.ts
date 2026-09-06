@@ -1,3 +1,4 @@
+import { LeadRealtimeModule } from "../lead/realtime/lead-realtime.module";
 import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { PrismaService } from "src/database/prisma.service";
@@ -12,7 +13,7 @@ import { AuthModule } from "./auth/auth.module";
 import { PortraitModule } from "./portrait/portrait.module";
 
 @Module({
-  imports: [JwtModule, UsersModule, AuthModule, PortraitModule, UserJourneyModule],
+  imports: [LeadRealtimeModule, JwtModule, UsersModule, AuthModule, PortraitModule, UserJourneyModule],
   controllers: [AdminController, AnalyticsController],
   providers: [PrismaService, AdminService, AnalyticsService, FinanceService],
 })

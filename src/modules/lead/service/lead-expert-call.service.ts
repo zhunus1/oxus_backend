@@ -49,8 +49,8 @@ export class LeadExpertCallService {
       {
         code: "shymkent",
         city: "Шымкент",
-        address: process.env.SALES_OFFICE_SHYMKENT_ADDRESS || "ТЕСТОВЫЙ АДРЕС: г. Шымкент, ул. Тестовая, 1",
-        testAddress: !process.env.SALES_OFFICE_SHYMKENT_ADDRESS,
+        address: process.env.SALES_OFFICE_SHYMKENT_ADDRESS || "г. Шымкент, ул. Байтерекова 2Б",
+        testAddress: false,
       },
     ];
   }

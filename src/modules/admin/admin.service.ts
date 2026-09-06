@@ -1,3 +1,4 @@
+import { LeadRealtimeGateway } from "../lead/realtime/lead-realtime.gateway";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { EducationLevel, Prisma, ProcessStep } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
@@ -66,6 +67,7 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly userJourneyLog: UserJourneyLogService,
     private readonly financeService: FinanceService,
+    private readonly leadRealtime: LeadRealtimeGateway,
   ) {}
 
   private mapToStudentWithStatus(user: StudentWithStatusRow) {
@@ -616,6 +618,7 @@ export class AdminService {
     return user;
   }
 
+  /** Updates account fields and revokes CRM sessions when its role changes. */
   async updateAdminUser(id: number, dto: AdminPatchUserDto, actorUserId: number) {
     const existing = await this.prisma.user.findUnique({ where: { id } });
     if (!existing) {
@@ -658,10 +661,12 @@ export class AdminService {
       data.password = await bcrypt.hash(dto.password, 10);
     }
 
-    return this.prisma.user.update({
+    const user = await this.prisma.user.update({
       where: { id },
       data,
       select: ADMIN_USER_DETAIL_SELECT,
     });
+    if (dto.roleId !== undefined) this.leadRealtime.revokeUser(id);
+    return user;
   }
 }

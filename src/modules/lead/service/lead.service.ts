@@ -1,3 +1,4 @@
+import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 import { Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
 import { LeadRepository } from "../repository/lead.repository";
 import { CreateLeadDto } from "../api/dto/create-lead.dto";
@@ -5,6 +6,7 @@ import { LeadEntity } from "../api/dto/lead.entity";
 import messages from "src/configs/messages";
 import { LeadIngestionService } from "./lead-ingestion.service";
 
+/** Preserves the legacy lead API and publishes new entries to the Sales queue. */
 @Injectable()
 export class LeadService {
   private readonly logger = new Logger(LeadService.name);
@@ -13,11 +15,14 @@ export class LeadService {
   constructor(
     private readonly repo: LeadRepository,
     private readonly ingestion: LeadIngestionService,
+    private readonly realtime: LeadRealtimeGateway,
   ) {}
 
+  /** Publishes one creation event after successful ingestion while keeping the legacy response. */
   async create(dto: CreateLeadDto): Promise<LeadEntity> {
     try {
       const result = await this.ingestion.ingestLegacy(dto);
+      if (result.created) this.realtime.emitLeadCreated(result.lead);
       return new LeadEntity(result.lead);
     } catch (err) {
       this.logger.error(messages.DATABASE_CREATE_ERROR(this.entity), err.stack);

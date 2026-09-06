@@ -185,8 +185,10 @@ async function main() {
   checked("signing atomically converts and assigns; conflicting assignment rolls back; repeated signature cannot duplicate benefits");
   const offlinePreview = await calls.preview(owner.id, rival.id, { ...booking, format: "OFFICE", officeCode: "shymkent" });
   assert.equal(offlinePreview.guestUrl, null);
-  assert.equal(offlinePreview.office?.testAddress, true);
+  assert.equal(offlinePreview.office?.testAddress, false);
+  assert.equal(offlinePreview.office?.address, process.env.SALES_OFFICE_SHYMKENT_ADDRESS || "г. Шымкент, ул. Байтерекова 2Б");
   const officeCall = await calls.savePreview(owner.id, rival.id, offlinePreview.invitationId);
+  assert.equal(officeCall.officeAddress, offlinePreview.office?.address);
   assert.equal((await calls.respond(expert.id, officeCall.id, { action: "confirm" })).meetingId, null);
   assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: rival.id } })).status, "OFFICE_INVITED");
   await assert.rejects(guests.guestAccess(offlinePreview.invitationId));

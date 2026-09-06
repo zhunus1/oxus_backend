@@ -30,6 +30,25 @@ describe("LeadExpertCallService", () => {
 
   beforeEach(() => jest.clearAllMocks());
 
+  it("returns the confirmed Shymkent office address and permits deployment overrides", () => {
+    const previous = process.env.SALES_OFFICE_SHYMKENT_ADDRESS;
+    try {
+      delete process.env.SALES_OFFICE_SHYMKENT_ADDRESS;
+      const service = new LeadExpertCallService({} as PrismaService, realtime);
+      expect(service.offices().find(office => office.code === "shymkent")).toEqual({
+        code: "shymkent",
+        city: "Шымкент",
+        address: "г. Шымкент, ул. Байтерекова 2Б",
+        testAddress: false,
+      });
+      process.env.SALES_OFFICE_SHYMKENT_ADDRESS = "Configured address";
+      expect(service.offices().find(office => office.code === "shymkent")?.address).toBe("Configured address");
+    } finally {
+      if (previous === undefined) delete process.env.SALES_OFFICE_SHYMKENT_ADDRESS;
+      else process.env.SALES_OFFICE_SHYMKENT_ADDRESS = previous;
+    }
+  });
+
   it("creates an expert request inside a configured availability block", async () => {
     const startTime = new Date();
     startTime.setUTCDate(startTime.getUTCDate() + 2);
