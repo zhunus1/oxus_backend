@@ -90,6 +90,8 @@ The root URL intentionally returns `503` until a frontend is deployed.
 
 ## Updating and rolling back
 
+For the separate, manually invoked 36-lead Sales / Expert demo after deployment, see [Sales / Expert demo](sales-expert-demo.md). The normal deploy and migrator do not seed these records.
+
 After a successful `main` build, update Test with:
 
 ```bash
