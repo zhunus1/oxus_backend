@@ -143,7 +143,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:RELEASE.2025-06-13T11-33-47Z
+    image: quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z
     command: server /data --console-address ":9090"
     environment:
       MINIO_ROOT_USER: local-minio

@@ -92,6 +92,10 @@ The root URL intentionally returns `503` until a frontend is deployed.
 
 ## Updating and rolling back
 
+The CI deploy job runs the existing `/opt/oxus_backend/deployment/deploy.sh` on the server; it does not copy deployment files from Git. When `compose.yaml` or `deploy.sh` changes, update the corresponding server file before deploying. Preserve the server's `.env` and private key.
+
+MinIO uses the pinned `quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z` image. If an older server Compose file still uses `minio/minio:RELEASE.2025-06-13T11-33-47Z`, replace that image reference with the Quay reference before retrying deployment. The release tag and volume configuration stay the same.
+
 For the separate, manually invoked 36-lead Sales / Expert demo after deployment, see [Sales / Expert demo](sales-expert-demo.md). The normal deploy and migrator do not seed these records.
 
 After a successful `main` build, update Test with:
