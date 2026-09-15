@@ -223,6 +223,7 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
       assignedExpertUserId: hasExpert ? expertId : null,
       expertQuestionnaire: hasExpert ? expertQuestionnaire : undefined,
       createdAt,
+      statusChangedAt: createdAt,
       updatedAt: bookedAt,
     },
   });
@@ -341,8 +342,8 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
     return call;
   };
 
+  const declined = entry.kind === "callback" && entry.position === 5 && entry.dayIndex === 2;
   if (entry.history) {
-    const declined = entry.kind === "callback" && entry.position === 5 && entry.dayIndex === 2;
     const outcome = entry.kind === "contract" ? "CONTRACT" : entry.position === 4 ? "RESCHEDULED" : entry.position === 5 && entry.dayIndex === 1 ? "NO_SHOW" : "FOLLOW_UP";
     await createCall(entry.history, "ONLINE", declined ? "DECLINED" : "COMPLETED", declined ? undefined : outcome);
   }
@@ -372,17 +373,25 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
     });
     await activity("CALLBACK_SCHEDULED", managerId, scheduledAt, { callbackId: callback.id, scheduledFor: entry.callbackAt!.toISOString() });
     await notify(managerId, "LEAD_CALLBACK_REMINDER", `Пора перезвонить: ${displayName}`, entry.callbackAt!, { callbackId: callback.id }, true);
-    state = { status: "RECALL", callbackReason: reason };
+    state = {
+      status: "RECALL",
+      statusChangedAt: entry.history ? (declined ? new Date(bookedAt.getTime() + 5 * MINUTE) : entry.history.endTime) : scheduledAt,
+      callbackReason: reason,
+    };
   } else if (entry.kind === "consultation") {
     const format = entry.position < 8 ? "ONLINE" : "OFFICE";
     const past = entry.slot!.endTime <= now;
     const status = past ? "COMPLETED" : entry.position % 2 === 0 ? "REQUESTED" : "CONFIRMED";
     await createCall(entry.slot!, format, status, past ? "FOLLOW_UP" : undefined);
-    state = { status: past ? "RECALL" : format === "ONLINE" ? "CALL_SCHEDULED" : "OFFICE_INVITED", callbackReason: past ? "FOLLOW_UP" : null };
+    state = {
+      status: past ? "RECALL" : format === "ONLINE" ? "CALL_SCHEDULED" : "OFFICE_INVITED",
+      statusChangedAt: past ? entry.slot!.endTime : bookedAt,
+      callbackReason: past ? "FOLLOW_UP" : null,
+    };
   } else if (entry.kind === "rejected") {
     const rejectedAt = new Date(entry.history!.endTime.getTime() + 15 * MINUTE);
     const reason = ["Семья выбрала другой бюджет", "Решили поступать в следующем году", "Выбрали обучение в Казахстане"][entry.dayIndex];
-    state = { status: "REJECTED", rejectedAt, rejectionReason: reason };
+    state = { status: "REJECTED", statusChangedAt: rejectedAt, rejectedAt, rejectionReason: reason };
     await activity("LEAD_REJECTED", managerId, rejectedAt, { reason });
   } else if (entry.kind === "contract") {
     const studentIdentity = contacts(batch, `${entry.code}-student`);
@@ -437,7 +446,12 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
       await tx.studentPackage.create({ data: { studentId: student.id, expertId: profileId, totalSlots: TIER_SLOTS.EXPERT_MENTORSHIP!, createdAt: studentSignedAt! } });
       await activity("LEAD_CONVERTED", student.id, studentSignedAt!, { contractId: contract.id, studentId: student.id, synthetic: true });
     }
-    state = { status: signed ? "CONVERTED" : "CONTRACT_PENDING", contract: { connect: { id: contract.id } }, convertedAt: studentSignedAt };
+    state = {
+      status: signed ? "CONVERTED" : "CONTRACT_PENDING",
+      statusChangedAt: studentSignedAt ?? preparedAt,
+      contract: { connect: { id: contract.id } },
+      convertedAt: studentSignedAt,
+    };
   }
   if (hasExpert && (entry.history || entry.position % 2 === 1)) state.expertStartedAt = new Date(bookedAt.getTime() + 5 * MINUTE);
   const updated = await tx.lead.update({ where: { id: lead.id }, data: state });

@@ -4,6 +4,7 @@ import { PrismaService } from "src/database/prisma.service";
 import { ExpertLeadQueryDto } from "../api/dto/sales/expert-lead-query.dto";
 import { ExpertFollowUpDto, ExpertQuestionnaireDto } from "../api/dto/sales/sales-v2.dto";
 import { leadTransaction } from "../domain/lead-transaction";
+import { leadStatusUpdate } from "../domain/lead-status";
 import { salesLeadDetailInclude, salesLeadListInclude } from "../repository/sales-lead.repository";
 import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 
@@ -45,7 +46,7 @@ export class ExpertLeadService {
         include: salesLeadListInclude,
         skip: (query.page - 1) * query.limit,
         take: query.limit,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        orderBy: query.tab === "NEW" ? [{ statusChangedAt: "desc" }, { id: "desc" }] : [{ createdAt: "desc" }, { id: "desc" }],
       }),
       this.prisma.lead.count({ where }),
     ]);
@@ -128,7 +129,7 @@ export class ExpertLeadService {
       });
       if (call.meetingId) await tx.meeting.update({ where: { id: call.meetingId }, data: { status: "COMPLETED" } });
       await tx.notificationLog.updateMany({ where: { leadId, type: "LEAD_EXPERT_CALL_REQUEST", status: "PENDING" }, data: { status: "CANCELLED" } });
-      const updated = await tx.lead.update({ where: { id: leadId }, data: { status: "RECALL", callbackReason: "FOLLOW_UP" } });
+      const updated = await tx.lead.update({ where: { id: leadId }, data: { ...leadStatusUpdate(lead.status, "RECALL"), callbackReason: "FOLLOW_UP" } });
       await tx.leadActivity.create({
         data: { leadId, actorUserId: expertId, type: "EXPERT_FOLLOW_UP", metadata: { callId: call.id, reason: dto.reason, comment: dto.comment?.trim() ?? null } },
       });

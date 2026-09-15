@@ -64,7 +64,8 @@ async function fixture() {
   const otherExpert = await user("EXPERT");
   await prisma.consultantProfile.create({ data: { id: 1000000 + expert.id, userId: expert.id, isActive: true } });
   for (let dayOfWeek = 1; dayOfWeek <= 7; dayOfWeek++) await prisma.expertSchedule.create({ data: { expertId: expert.id, dayOfWeek, startMinute: 0, endMinute: 1440 } });
-  const lead = await prisma.lead.create({ data: { assignedSalesManagerId: salesId, status: "NEW" } });
+  const createdAt = new Date("2020-01-01T00:00:00Z");
+  const lead = await prisma.lead.create({ data: { assignedSalesManagerId: salesId, status: "NEW", createdAt, statusChangedAt: createdAt } });
   const start = new Date();
   start.setUTCDate(start.getUTCDate() + 3);
   start.setUTCHours(10, 0, 0, 0);
@@ -154,6 +155,8 @@ for (const flow of ["preview-save", "legacy"] as const)
     assert.equal(result.data[0].id, lead.id);
     assert.equal(result.data[0].assignedExpertUserId, expert.id);
     assert.equal(result.data[0].status, "CALL_SCHEDULED");
+    const statusChangedAt = result.data[0].statusChangedAt;
+    assert(new Date(statusChangedAt) > lead.createdAt, "Booking must record the status transition time");
     assert.equal((await http(expert.id, "get", "/expert/leads").expect(200)).body.meta.total, 1, "Default tab must be NEW");
     assert.equal((await http(expert.id, "get", "/expert/leads/summary").expect(200)).body.NEW, 1);
     assert.equal((await list(otherExpert.id)).body.meta.total, 0);
@@ -164,6 +167,52 @@ for (const flow of ["preview-save", "legacy"] as const)
     }
     await http(expert.id, "post", `/expert/leads/${lead.id}/start`).expect(201);
     assert.equal((await list(expert.id)).body.meta.total, 1, "Starting work must retain the NEW card");
+    await http(expert.id, "patch", `/expert/leads/${lead.id}/questionnaire`).send({ additionalInformation: "Updated questionnaire" }).expect(200);
     await http(expert.id, "patch", `/expert/lead-calls/${call.id}/respond`).send({ action: "confirm" }).expect(200);
     assert.equal((await list(expert.id)).body.meta.total, 1, "Confirming the call must retain the NEW card");
+    assert.equal((await list(expert.id)).body.data[0].statusChangedAt, statusChangedAt, "Starting, editing and confirming must preserve the lead status timestamp");
+  });
+
+test("HTTP: NEW sorts both consultation statuses by status change before pagination, with ID breaking ties", async () => {
+  const expert = await user("EXPERT");
+  const old = new Date("2020-01-01T00:00:00Z");
+  const recent = new Date("2021-01-01T00:00:00Z");
+  const create = (status: "CALL_SCHEDULED" | "OFFICE_INVITED", createdAt: Date, statusChangedAt: Date) =>
+    prisma.lead.create({ data: { status, createdAt, statusChangedAt, assignedExpertUserId: expert.id } });
+  const newestCreated = await create("CALL_SCHEDULED", recent, old);
+  const firstChanged = await create("CALL_SCHEDULED", old, recent);
+  const secondChanged = await create("OFFICE_INVITED", old, recent);
+  const ids: number[] = [];
+  for (let page = 1; page <= 3; page++) {
+    const result = await http(expert.id, "get", "/expert/leads").query({ tab: "NEW", page, limit: 1 }).expect(200);
+    assert.deepEqual(result.body.meta, { page, limit: 1, total: 3, totalPages: 3 });
+    ids.push(result.body.data[0].id);
+  }
+  assert.deepEqual(ids, [secondChanged.id, firstChanged.id, newestCreated.id]);
+  await http(expert.id, "patch", `/expert/leads/${newestCreated.id}/questionnaire`).send({ additionalInformation: "Do not move this card" }).expect(200);
+  const result = await http(expert.id, "get", "/expert/leads").expect(200);
+  assert.deepEqual(
+    result.body.data.map((lead: { id: number }) => lead.id),
+    ids,
+    "Questionnaire editing must not reorder cards; omitted tab defaults to NEW",
+  );
+});
+
+for (const [tab, status] of [
+  ["FOLLOW_UP", "RECALL"],
+  ["CONTRACTS", "CONTRACT_PENDING"],
+  ["ARCHIVE", "REJECTED"],
+] as const)
+  test(`HTTP: ${tab} retains creation-date sorting`, async () => {
+    const expert = await user("EXPERT");
+    const old = new Date("2020-01-01T00:00:00Z");
+    const recent = new Date("2021-01-01T00:00:00Z");
+    const create = (createdAt: Date, statusChangedAt: Date) => prisma.lead.create({ data: { status, createdAt, statusChangedAt, assignedExpertUserId: expert.id } });
+    const first = await create(recent, old);
+    const second = await create(old, recent);
+    const result = await http(expert.id, "get", "/expert/leads").query({ tab }).expect(200);
+    assert.deepEqual(
+      result.body.data.map((lead: { id: number }) => lead.id),
+      [first.id, second.id],
+    );
   });

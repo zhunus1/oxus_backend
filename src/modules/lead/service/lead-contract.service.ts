@@ -6,6 +6,7 @@ import { Prisma } from "generated/prisma/client";
 import { PrepareLeadContractDto } from "../api/dto/sales/prepare-lead-contract.dto";
 import { normalizePhoneNumber } from "../domain/phone-number";
 import { leadTransaction } from "../domain/lead-transaction";
+import { leadStatusUpdate } from "../domain/lead-status";
 import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 import { LeadStudentInvitationService } from "./lead-student-invitation.service";
 
@@ -112,7 +113,10 @@ export class LeadContractService {
       await tx.meeting.updateMany({ where: { id: { in: calls.flatMap(c => (c.meetingId ? [c.meetingId] : [])) } }, data: { status: "COMPLETED" } });
       await tx.leadCallback.updateMany({ where: { leadId, status: "SCHEDULED" }, data: { status: "CANCELLED", cancelledAt: new Date() } });
       await tx.notificationLog.updateMany({ where: { leadId, status: "PENDING" }, data: { status: "CANCELLED" } });
-      const updated = await tx.lead.update({ where: { id: leadId }, data: { contractId: contract.id, status: "CONTRACT_PENDING", callbackReason: null } });
+      const updated = await tx.lead.update({
+        where: { id: leadId },
+        data: { contractId: contract.id, ...leadStatusUpdate(lead.status, "CONTRACT_PENDING"), callbackReason: null },
+      });
       await tx.leadActivity.create({
         data: { leadId, actorUserId: expertId, type: "CONTRACT_PREPARED", metadata: { contractId: contract.id, studentId: student.id, reusedAccount: users.length > 0 } },
       });

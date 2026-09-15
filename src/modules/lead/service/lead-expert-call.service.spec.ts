@@ -236,7 +236,7 @@ describe("LeadExpertCallService", () => {
 
     await service.respond(23, 6, { action: "decline", comment: "  Busy  " });
 
-    expect(tx.lead.update).toHaveBeenCalledWith({ where: { id: 8 }, data: { status: "NEW" } });
+    expect(tx.lead.update).toHaveBeenCalledWith({ where: { id: 8 }, data: { status: "NEW", statusChangedAt: expect.any(Date) } });
     expect(tx.leadExpertCall.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 6 },

@@ -1,4 +1,5 @@
 import { leadTransaction } from "../domain/lead-transaction";
+import { leadStatusUpdate } from "../domain/lead-status";
 import { assertLeadOfficeCity } from "../domain/lead-office";
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { LeadCallbackStatus, LeadExpertCallStatus, LeadStatus, MeetingStatus, Prisma } from "generated/prisma/client";
@@ -181,7 +182,7 @@ export class LeadExpertCallService {
       await tx.lead.update({
         where: { id: leadId },
         data: {
-          status: booking?.format === "OFFICE" ? LeadStatus.OFFICE_INVITED : LeadStatus.CALL_SCHEDULED,
+          ...leadStatusUpdate(lead.status, booking?.format === "OFFICE" ? LeadStatus.OFFICE_INVITED : LeadStatus.CALL_SCHEDULED),
           assignedExpertUserId: expert.id,
           expertStartedAt: null,
           callbackReason: null,
@@ -469,7 +470,13 @@ export class LeadExpertCallService {
         return { updated, notification };
       }
 
-      await tx.lead.update({ where: { id: call.leadId }, data: call.invitationId ? { status: LeadStatus.RECALL, callbackReason: "FOLLOW_UP" } : { status: LeadStatus.NEW } });
+      await tx.lead.update({
+        where: { id: call.leadId },
+        data: {
+          ...leadStatusUpdate(call.lead.status, call.invitationId ? LeadStatus.RECALL : LeadStatus.NEW),
+          ...(call.invitationId ? { callbackReason: "FOLLOW_UP" as const } : {}),
+        },
+      });
       const updated = await tx.leadExpertCall.update({
         where: { id: call.id },
         data: {

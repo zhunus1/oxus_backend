@@ -1101,7 +1101,8 @@ model Lead {
   role              String? // "student" | "parent" | "teacher" | "other"
   preferredLanguage String? // "en" | "ru" | "kk"
 
-  status LeadStatus @default(NEW)
+  status          LeadStatus @default(NEW)
+  statusChangedAt DateTime   @default(now())
 
   originSourceId Int        @default(1)
   originSource   LeadSource @relation("LeadOriginSource", fields: [originSourceId], references: [id])
@@ -1149,6 +1150,7 @@ model Lead {
   @@index([phoneNumber])
   @@index([originSourceId, createdAt])
   @@index([assignedExpertUserId, status, createdAt])
+  @@index([assignedExpertUserId, statusChangedAt, id])
 }
 
 model LeadSubmission {

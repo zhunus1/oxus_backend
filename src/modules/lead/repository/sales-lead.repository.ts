@@ -3,6 +3,7 @@ import { LeadCallbackReason, LeadCallbackStatus, LeadExpertCallStatus, LeadStatu
 import { PrismaService } from "src/database/prisma.service";
 import { SalesLeadQueryDto } from "../api/dto/sales/sales-lead-query.dto";
 import { leadTransaction } from "../domain/lead-transaction";
+import { leadStatusUpdate } from "../domain/lead-status";
 import { LEAD_ACTIVITY } from "../domain/lead.constants";
 
 const salesManagerSelect = {
@@ -199,7 +200,7 @@ export class SalesLeadRepository {
       });
       const lead = await tx.lead.update({
         where: { id: leadId },
-        data: { status: LeadStatus.RECALL, callbackReason, rejectedAt: null, rejectionReason: null },
+        data: { ...leadStatusUpdate(owned.status, LeadStatus.RECALL), callbackReason, rejectedAt: null, rejectionReason: null },
         include: salesLeadDetailInclude,
       });
       await tx.leadActivity.create({
@@ -277,7 +278,7 @@ export class SalesLeadRepository {
           ? await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: salesLeadDetailInclude })
           : await tx.lead.update({
               where: { id: leadId },
-              data: { status: owned.assignedExpertUserId ? LeadStatus.RECALL : LeadStatus.NEW },
+              data: leadStatusUpdate(owned.status, owned.assignedExpertUserId ? LeadStatus.RECALL : LeadStatus.NEW),
               include: salesLeadDetailInclude,
             });
 
@@ -288,7 +289,7 @@ export class SalesLeadRepository {
   /** Closes an owned lead and cancels its active consultations, callbacks, and pending notifications. */
   async reject(leadId: number, managerId: number, reason: string) {
     return leadTransaction(this.prisma, async tx => {
-      await this.requireMutableOwned(tx, leadId, managerId);
+      const owned = await this.requireMutableOwned(tx, leadId, managerId);
       await tx.leadCallback.updateMany({
         where: { leadId, status: LeadCallbackStatus.SCHEDULED },
         data: { status: LeadCallbackStatus.CANCELLED, cancelledAt: new Date() },
@@ -301,7 +302,7 @@ export class SalesLeadRepository {
 
       const lead = await tx.lead.update({
         where: { id: leadId },
-        data: { status: LeadStatus.REJECTED, rejectedAt: new Date(), rejectionReason: reason },
+        data: { ...leadStatusUpdate(owned.status, LeadStatus.REJECTED), rejectedAt: new Date(), rejectionReason: reason },
         include: salesLeadDetailInclude,
       });
       await tx.leadActivity.create({

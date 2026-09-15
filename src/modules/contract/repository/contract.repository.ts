@@ -1,5 +1,6 @@
 import { recordContractEmails } from "../domain/contract-emails";
 import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
+import { leadStatusUpdate } from "src/modules/lead/domain/lead-status";
 import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
 import { BadRequestException, ConflictException, ForbiddenException, Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
@@ -147,7 +148,7 @@ export class ContractRepository extends BaseRepository {
           create: { studentId: contract.studentId, expertId: expert.id, totalSlots },
           update: { totalSlots: { increment: totalSlots } },
         });
-      await tx.lead.update({ where: { id: lead.id }, data: { status: "CONVERTED", convertedAt: new Date() } });
+      await tx.lead.update({ where: { id: lead.id }, data: { ...leadStatusUpdate(lead.status, "CONVERTED"), convertedAt: new Date() } });
       await tx.leadActivity.create({
         data: { leadId: lead.id, actorUserId: contract.studentId, type: "LEAD_CONVERTED", metadata: { contractId: id, studentId: contract.studentId } },
       });
