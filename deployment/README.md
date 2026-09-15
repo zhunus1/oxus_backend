@@ -15,6 +15,8 @@ The same application image is used in every environment. Runtime behavior comes 
 
 Only host Nginx accepts public traffic. It forwards `/api` to the backend and `/storage/` to MinIO. All database, Redis, and Browserless ports remain private.
 
+Email notifications for expert calls use the existing SMTP and Redis configuration. See [call notification setup and behavior](lead-call-notifications.md).
+
 ## First Test deployment
 
 Push the repository changes to `main` and wait for the GitHub Actions workflow to publish:

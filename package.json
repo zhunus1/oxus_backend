@@ -24,6 +24,7 @@
     "test:sales-v2:http": "nest build && node --import tsx --test --test-concurrency=1 test/sales-expert-v2-http.test.ts",
     "test:sales-v2:reliability": "nest build && node --import tsx --test --test-concurrency=1 test/sales-contract-reliability.test.ts",
     "test:sales-v2:regression": "node --import tsx --test --test-concurrency=1 test/sales-expert-v2-regression.test.ts",
+    "test:lead-call-notifications": "nest build && node --import tsx --test --test-concurrency=1 test/lead-call-notifications.test.ts",
     "test:sales-demo": "nest build && node --import tsx --test --test-concurrency=1 test/sales-expert-demo.test.ts"
   },
   "dependencies": {

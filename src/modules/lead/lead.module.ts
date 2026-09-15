@@ -34,6 +34,7 @@ import { MailModule } from "../mail/mail.module";
 import { ConfigModule } from "@nestjs/config";
 import { LeadNotificationService } from "./service/lead-notification.service";
 import { LeadNotificationProcessor } from "./service/lead-notification.processor";
+import { LEAD_CALL_NOTIFICATION_QUEUE, LeadCallNotificationService, LeadCallNotificationProcessor } from "./service/lead-call-notification.service";
 
 /** Registers lead ingestion, Sales and Expert workflows, and durable notification workers. */
 @Module({
@@ -46,6 +47,7 @@ import { LeadNotificationProcessor } from "./service/lead-notification.processor
     BullModule.registerQueue({ name: "lead-invitations" }),
     JwtModule,
     BullModule.registerQueue({ name: "lead-notifications" }),
+    BullModule.registerQueue({ name: LEAD_CALL_NOTIFICATION_QUEUE }),
     ThrottlerModule.forRoot([{ name: "public-lead-submission", ttl: 60_000, limit: 30 }]),
   ],
   controllers: [
@@ -79,6 +81,8 @@ import { LeadNotificationProcessor } from "./service/lead-notification.processor
     LeadStudentInvitationProcessor,
     LeadNotificationService,
     LeadNotificationProcessor,
+    LeadCallNotificationService,
+    LeadCallNotificationProcessor,
   ],
 })
 export class LeadModule {}

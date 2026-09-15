@@ -16,6 +16,7 @@ import { LEAD_ACTIVITY } from "../domain/lead.constants";
 import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 import { PreviewLeadMeetingDto } from "../api/dto/sales/sales-v2.dto";
 import { assertLeadBookingTime } from "../domain/lead-booking";
+import { scheduleLeadCallNotifications } from "../domain/lead-call-notifications";
 
 const leadCallInclude = {
   lead: {
@@ -221,6 +222,7 @@ export class LeadExpertCallService {
           sentAt: new Date(),
         },
       });
+      await scheduleLeadCallNotifications(tx, created);
       return { created, notification, previousExpertUserId: lead.assignedExpertUserId };
     });
 
@@ -386,6 +388,9 @@ export class LeadExpertCallService {
             })
           : null;
 
+      if (expertUserId !== existing.expertUserId || updated.startTime.getTime() !== existing.startTime.getTime() || updated.endTime.getTime() !== existing.endTime.getTime()) {
+        await scheduleLeadCallNotifications(tx, updated);
+      }
       return { updated, previousExpertUserId: existing.expertUserId, notification };
     });
 

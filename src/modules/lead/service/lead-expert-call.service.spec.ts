@@ -61,6 +61,7 @@ describe("LeadExpertCallService", () => {
       expertUserId: 23,
       startTime,
       endTime,
+      updatedAt: new Date(),
       lead: { id: 8, status: "CALL_SCHEDULED" },
     };
     const notification = { id: 11, userId: 23 };
@@ -82,6 +83,7 @@ describe("LeadExpertCallService", () => {
       },
       leadCallback: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
       notificationLog: {
+        createMany: jest.fn().mockResolvedValue({ count: 2 }),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         create: jest.fn().mockResolvedValue(notification),
       },
@@ -120,6 +122,13 @@ describe("LeadExpertCallService", () => {
     expect(emitExpertCallRequested).toHaveBeenCalledWith(23, createdCall);
     expect(emitNotification).toHaveBeenCalledWith(23, notification);
     expect(result).toBe(createdCall);
+    expect(tx.notificationLog.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({ userId: 23, channel: "EMAIL", type: "LEAD_EXPERT_CALL_ASSIGNED", status: "PENDING" }),
+        expect.objectContaining({ userId: 23, channel: "EMAIL", type: "LEAD_EXPERT_CALL_REMINDER", scheduledFor: new Date(startTime.getTime() - 600_000) }),
+      ]),
+      skipDuplicates: true,
+    });
   });
 
   it("creates the Meeting only after the expert confirms", async () => {

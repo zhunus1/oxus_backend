@@ -836,6 +836,11 @@ model NotificationLog {
   metadata Json?
   readAt   DateTime?
 
+  deliveryKey        String?   @unique
+  deliveryAttempts   Int       @default(0)
+  deliveryLeaseUntil DateTime?
+  nextAttemptAt      DateTime?
+
   createdAt DateTime @default(now())
 
   @@index([userId, channel, readAt, createdAt])
