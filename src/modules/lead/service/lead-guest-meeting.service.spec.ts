@@ -28,6 +28,17 @@ describe("LeadGuestMeetingService access boundaries", () => {
   it.each([-600_001, 1_800_000, 1_800_001])("denies guest access outside the window at offset %i ms", async offset => {
     jest.setSystemTime(startTime.getTime() + offset);
     await expect(service.guestAccess("opaque-id")).rejects.toThrow("Meeting access is available");
+    await expect(service.guestAccess("opaque-id")).rejects.toMatchObject({
+      status: 403,
+      response: {
+        statusCode: 403,
+        error: "Forbidden",
+        code: offset < 0 ? "MEETING_ACCESS_NOT_OPEN" : "MEETING_ENDED",
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        accessAvailableFrom: "2026-10-01T03:50:00.000Z",
+      },
+    });
     expect(signLeadRoomToken).not.toHaveBeenCalled();
   });
 
@@ -40,6 +51,13 @@ describe("LeadGuestMeetingService access boundaries", () => {
   it.each(["REQUESTED", "DECLINED", "CANCELLED", "COMPLETED"])("denies guest access for a %s call", async status => {
     findUnique.mockResolvedValue({ id: "opaque-id", call: { ...activeCall(), status } });
     await expect(service.guestAccess("opaque-id")).rejects.toThrow("Meeting is not confirmed");
+    await expect(service.guestAccess("opaque-id")).rejects.toMatchObject({
+      response: {
+        code: status === "COMPLETED" ? "MEETING_ENDED" : status === "REQUESTED" ? "MEETING_NOT_CONFIRMED" : "MEETING_INACTIVE",
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+      },
+    });
     expect(signLeadRoomToken).not.toHaveBeenCalled();
   });
 
@@ -52,7 +70,36 @@ describe("LeadGuestMeetingService access boundaries", () => {
   ])("hides unavailable guest invitations", async invitation => {
     findUnique.mockResolvedValue(invitation);
     await expect(service.guestAccess("opaque-id")).rejects.toThrow("Meeting is not available");
+    await expect(service.guestAccess("opaque-id")).rejects.toMatchObject({
+      status: 404,
+      response: {
+        statusCode: 404,
+        error: "Not Found",
+        code: "MEETING_NOT_AVAILABLE",
+        message: "Meeting is not available",
+      },
+    });
     expect(signLeadRoomToken).not.toHaveBeenCalled();
+  });
+
+  it("reports an expired unconfirmed call as ended", async () => {
+    jest.setSystemTime(endTime);
+    findUnique.mockResolvedValue({ id: "opaque-id", call: { ...activeCall(), status: "REQUESTED", meeting: null } });
+    await expect(service.guestAccess("opaque-id")).rejects.toMatchObject({ status: 403, response: { code: "MEETING_ENDED" } });
+    expect(signLeadRoomToken).not.toHaveBeenCalled();
+  });
+
+  it("does not disclose room or lead data in an early-access response", async () => {
+    jest.setSystemTime(startTime.getTime() - 86400_000);
+    await expect(service.guestAccess("opaque-id").catch((error: { getResponse(): unknown }) => error.getResponse())).resolves.toEqual({
+      statusCode: 403,
+      error: "Forbidden",
+      code: "MEETING_ACCESS_NOT_OPEN",
+      message: "Meeting access is available from 10 minutes before start until its end",
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      accessAvailableFrom: "2026-10-01T03:50:00.000Z",
+    });
   });
 
   it("issues moderator access only after querying current expert ownership", async () => {

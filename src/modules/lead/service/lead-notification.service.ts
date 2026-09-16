@@ -5,6 +5,7 @@ import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/com
 import { Queue } from "bullmq";
 import { PrismaService } from "src/database/prisma.service";
 import { NotificationQueryDto } from "../api/dto/sales/notification-query.dto";
+import { notificationPayload } from "../domain/notification-payload";
 
 /** Schedules persistent in-app reminders and restores due jobs after queue outages. */
 @Injectable()
@@ -92,7 +93,7 @@ export class LeadNotificationService implements OnModuleInit {
       }),
       this.prisma.notificationLog.count({ where }),
     ]);
-    return { data, meta: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } };
+    return { data: data.map(notificationPayload), meta: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } };
   }
 
   /** Counts delivered unread in-app notifications for this user. */
@@ -107,7 +108,7 @@ export class LeadNotificationService implements OnModuleInit {
       data: { readAt: new Date() },
     });
     if (result.count !== 1) throw new NotFoundException("Notification not found");
-    return this.prisma.notificationLog.findUniqueOrThrow({ where: { id: notificationId } });
+    return notificationPayload(await this.prisma.notificationLog.findUniqueOrThrow({ where: { id: notificationId } }));
   }
 
   /** Marks all delivered unread notifications for the recipient in one update. */

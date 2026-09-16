@@ -48,6 +48,30 @@ describe("LeadNotificationService", () => {
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
   });
 
+  it("returns translation parameters in paginated history, including scheduled reminders", async () => {
+    const notification = { id: 5, type: "LEAD_CALLBACK_REMINDER", status: "PENDING", metadata: { callbackId: 4, params: { leadName: "Әлия" } } };
+    findMany.mockResolvedValue([{ ...notification, content: "Пора перезвонить: Әлия" }]);
+    count.mockResolvedValue(1);
+
+    await expect(service.list(17, { page: 1, limit: 20, includeScheduled: true })).resolves.toEqual({
+      data: [{ ...notification, params: { leadName: "Әлия" } }],
+      meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    });
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 17, channel: "IN_APP", status: { in: ["SENT", "PENDING"] } } }));
+  });
+
+  it("retains translation parameters when marking a notification as read", async () => {
+    const notification = { id: 5, type: "LEAD_EXPERT_CALL_RESPONSE", status: "SENT", metadata: { callId: 6, params: { response: "DECLINED" } } };
+    findUniqueOrThrow.mockResolvedValue({ ...notification, content: "Эксперт отклонил запрос на созвон" });
+    await expect(service.markRead(17, 5)).resolves.toEqual({ ...notification, params: { response: "DECLINED" } });
+  });
+
+  it("omits content from legacy delivered notifications without parameter snapshots", async () => {
+    findMany.mockResolvedValue([{ id: 5, type: "LEAD_FOLLOW_UP", status: "SENT", metadata: null, content: "Лид Әлия передан на дожим" }]);
+    const result = await service.list(17, { page: 1, limit: 20 });
+    expect(result.data).toEqual([{ id: 5, type: "LEAD_FOLLOW_UP", status: "SENT", metadata: null, params: null }]);
+  });
+
   it("restores pending reminders near their due time when the application starts", async () => {
     const first = { id: 5, scheduledFor: new Date(Date.now() + 60_000) };
     const second = { id: 6, scheduledFor: new Date(Date.now() + 120_000) };

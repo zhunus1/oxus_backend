@@ -81,6 +81,7 @@ export class SalesLeadService {
       scheduledFor,
       status: dto.status,
       comment: dto.comment?.trim(),
+      reason: dto.reason,
     });
     if (result.kind === "not_found") throw new NotFoundException("Lead callback not found");
     if (result.kind === "not_editable") throw new ConflictException("A completed or cancelled callback cannot be changed");

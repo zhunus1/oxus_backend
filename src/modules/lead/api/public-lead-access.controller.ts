@@ -1,4 +1,4 @@
-import { Body, Controller, Param, ParseUUIDPipe, Post, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Param, ParseUUIDPipe, Post, UseGuards } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { Public } from "src/modules/admin/auth/rbac/public.decorator";
@@ -18,7 +18,15 @@ export class PublicLeadAccessController {
   ) {}
   /** Exchanges an opaque meeting invitation for access after checking meeting state and time. */
   @Post("meetings/:invitationId/access")
-  guest(@Param("invitationId", ParseUUIDPipe) id: string) {
+  guest(
+    @Param(
+      "invitationId",
+      new ParseUUIDPipe({
+        exceptionFactory: message => new BadRequestException({ statusCode: 400, error: "Bad Request", code: "INVALID_INVITATION_ID", message }),
+      }),
+    )
+    id: string,
+  ) {
     return this.meetings.guestAccess(id);
   }
   /** Consumes a valid one-use activation token to set the student password. */

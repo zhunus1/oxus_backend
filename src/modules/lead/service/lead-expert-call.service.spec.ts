@@ -30,6 +30,77 @@ describe("LeadExpertCallService", () => {
 
   beforeEach(() => jest.clearAllMocks());
 
+  describe("preview conflict codes", () => {
+    const startTime = new Date();
+    startTime.setUTCDate(startTime.getUTCDate() + 2);
+    startTime.setUTCHours(10, 0, 0, 0);
+    const dto = { expertUserId: 23, format: "ONLINE" as const, startTime: startTime.toISOString(), endTime: new Date(startTime.getTime() + 1800_000).toISOString() };
+    const leadFindFirst = jest.fn();
+    const callFindFirst = jest.fn();
+    const consultationFindFirst = jest.fn();
+    const createInvitation = jest.fn();
+    const prisma = {
+      lead: { findFirst: leadFindFirst },
+      user: { findFirst: jest.fn().mockResolvedValue({ firstname: "Expert", lastname: "Name", timezone: "UTC", consultantProfile: { id: 31 } }) },
+      expertSchedule: { findFirst: jest.fn().mockResolvedValue({ id: 1 }) },
+      consultation: { findFirst: consultationFindFirst },
+      leadExpertCall: { findFirst: callFindFirst },
+      leadMeetingInvitation: { create: createInvitation },
+    };
+    const service = new LeadExpertCallService(prisma as unknown as PrismaService, realtime);
+
+    beforeEach(() => {
+      leadFindFirst.mockResolvedValue({ id: 8, submissions: [] });
+      callFindFirst.mockResolvedValue(null);
+      consultationFindFirst.mockResolvedValue(null);
+      createInvitation.mockResolvedValue({ id: "invitation-1", expiresAt: startTime });
+    });
+
+    it.each([
+      [{ id: 6, leadId: 8 }, null, "LEAD_MEETING_ALREADY_SCHEDULED"],
+      [{ id: 7, leadId: 9 }, null, "EXPERT_SLOT_UNAVAILABLE"],
+      [null, { id: 10 }, "EXPERT_SLOT_UNAVAILABLE"],
+    ])("distinguishes a saved meeting from another booking: %j / %j", async (call, consultation, code) => {
+      callFindFirst.mockResolvedValue(call);
+      consultationFindFirst.mockResolvedValue(consultation);
+      await expect(service.preview(17, 8, dto)).rejects.toMatchObject({
+        status: 409,
+        response: {
+          statusCode: 409,
+          error: "Conflict",
+          code,
+          message: "This expert slot is already booked",
+        },
+      });
+      expect(createInvitation).not.toHaveBeenCalled();
+      expect(callFindFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it("identifies a lead already in the contract process", async () => {
+      leadFindFirst.mockResolvedValue({ id: 8, contractId: "contract-1" });
+      await expect(service.preview(17, 8, dto)).rejects.toMatchObject({ status: 409, response: { code: "LEAD_CONTRACT_IN_PROGRESS", message: "Lead is already being converted" } });
+      expect(callFindFirst).not.toHaveBeenCalled();
+      expect(createInvitation).not.toHaveBeenCalled();
+    });
+
+    it("checks ownership before disclosing any booking conflict", async () => {
+      leadFindFirst.mockResolvedValue(null);
+      await expect(service.preview(17, 8, dto)).rejects.toMatchObject({ status: 404 });
+      expect(leadFindFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 8, assignedSalesManagerId: 17, deletedAt: null } }));
+      expect(callFindFirst).not.toHaveBeenCalled();
+      expect(createInvitation).not.toHaveBeenCalled();
+    });
+
+    it("still creates a preview for a free configured slot", async () => {
+      await expect(service.preview(17, 8, dto)).resolves.toMatchObject({
+        invitationId: "invitation-1",
+        timezone: "UTC",
+        messages: { ru: expect.any(String), kk: expect.any(String) },
+      });
+      expect(createInvitation).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("returns the confirmed Shymkent office address and permits deployment overrides", () => {
     const previous = process.env.SALES_OFFICE_SHYMKENT_ADDRESS;
     try {
@@ -174,6 +245,13 @@ describe("LeadExpertCallService", () => {
     });
     expect(emitExpertCallUpdated).toHaveBeenCalledWith(23, 17, updated);
     expect(emitNotification).toHaveBeenCalledWith(17, notification);
+    expect(tx.notificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "LEAD_EXPERT_CALL_RESPONSE",
+        content: "",
+        metadata: { callId: 6, params: { response: "CONFIRMED" } },
+      }),
+    });
     expect(result).toBe(updated);
   });
 
@@ -244,6 +322,13 @@ describe("LeadExpertCallService", () => {
       }),
     );
     expect(emitLeadUpdated).toHaveBeenCalledWith(17, updated.lead);
+    expect(tx.notificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "LEAD_EXPERT_CALL_RESPONSE",
+        content: "",
+        metadata: { callId: 6, params: { response: "DECLINED" } },
+      }),
+    });
   });
 
   it("sorts pending calls chronologically but history from newest to oldest", async () => {

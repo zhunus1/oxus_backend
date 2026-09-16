@@ -1,5 +1,6 @@
 import type { JwtService } from "@nestjs/jwt";
 import type { Socket } from "socket.io";
+import type { NotificationLog } from "generated/prisma/client";
 import type { PrismaService } from "src/database/prisma.service";
 import { LeadRealtimeGateway } from "./lead-realtime.gateway";
 
@@ -33,6 +34,30 @@ describe("LeadRealtimeGateway connection authorization", () => {
   });
 
   afterEach(() => gateway.onModuleDestroy());
+
+  it("emits translation parameters to the recipient's Sales and Expert rooms", () => {
+    const emit = jest.fn();
+    const to = jest.fn().mockReturnValue({ emit });
+    const realtime = new LeadRealtimeGateway(jwt, prisma);
+    Object.assign(realtime, { server: { to } });
+    const notification = {
+      id: 5,
+      type: "LEAD_CALLBACK_REMINDER",
+      content: "Пора перезвонить: Әлия",
+      metadata: { callbackId: 4, params: { leadName: "Әлия" } },
+    } as unknown as NotificationLog;
+
+    realtime.emitNotification(17, notification);
+
+    expect(to.mock.calls).toEqual([["sales:user:17"], ["expert:user:17"]]);
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenCalledWith("notification.created", {
+      id: 5,
+      type: "LEAD_CALLBACK_REMINDER",
+      metadata: { callbackId: 4, params: { leadName: "Әлия" } },
+      params: { leadName: "Әлия" },
+    });
+  });
 
   it("joins a Sales Manager only to the shared new-lead room and their private room", async () => {
     findUnique.mockResolvedValue({ deletedAt: null, role: { code: "SALES_MANAGER" } });

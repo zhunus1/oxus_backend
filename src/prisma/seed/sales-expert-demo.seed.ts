@@ -229,7 +229,7 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
   });
   const activity = (type: string, actorUserId: number | null, at: Date, metadata: Prisma.InputJsonObject = {}) =>
     tx.leadActivity.create({ data: { leadId: lead.id, type, actorUserId, createdAt: at, metadata: { ...metadata, demoBatch: batch, scenario: entry.code } } });
-  const notify = (userId: number, type: string, content: string, at: Date, metadata: Prisma.InputJsonObject, pending = false) =>
+  const notify = (userId: number, type: string, at: Date, metadata: Prisma.InputJsonObject, pending = false) =>
     tx.notificationLog.create({
       data: {
         leadId: lead.id,
@@ -237,7 +237,7 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
         type,
         channel: "IN_APP",
         status: pending ? "PENDING" : "SENT",
-        content,
+        content: "",
         metadata,
         scheduledFor: at,
         sentAt: pending ? null : at,
@@ -330,15 +330,22 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
       endTime: slot.endTime.toISOString(),
       format,
     });
-    await notify(expertId, "LEAD_EXPERT_CALL_REQUEST", `${displayName}: ${entry.description}`, bookedAt, { callId: call.id });
+    await notify(expertId, "LEAD_EXPERT_CALL_REQUEST", bookedAt, { callId: call.id, params: {} });
     if (confirmed) await activity("EXPERT_CALL_CONFIRMED", expertId, respondedAt, { callId: call.id, meetingId: meeting?.id ?? null });
     if (status === "DECLINED") await activity("EXPERT_CALL_DECLINED", expertId, respondedAt, { callId: call.id, comment: "Прошу согласовать другое время" });
     if (finishedAt && outcome !== "CONTRACT")
       await activity("EXPERT_FOLLOW_UP", expertId, finishedAt, { callId: call.id, reason: outcome ?? "FOLLOW_UP", comment: entry.description });
     if (confirmed || status === "DECLINED")
-      await notify(managerId, "LEAD_EXPERT_CALL_RESPONSE", `${displayName}: ${confirmed ? "Встреча подтверждена" : "Запрос отклонён"}`, respondedAt, { callId: call.id });
+      await notify(managerId, "LEAD_EXPERT_CALL_RESPONSE", respondedAt, {
+        callId: call.id,
+        params: { response: confirmed ? "CONFIRMED" : "DECLINED" },
+      });
     if (finishedAt && outcome !== "CONTRACT")
-      await notify(managerId, "LEAD_FOLLOW_UP", `${displayName}: ${entry.description}`, finishedAt, { callId: call.id, reason: outcome ?? "FOLLOW_UP" });
+      await notify(managerId, "LEAD_FOLLOW_UP", finishedAt, {
+        callId: call.id,
+        reason: outcome ?? "FOLLOW_UP",
+        params: { leadName: displayName, leadId: lead.id, reason: outcome ?? "FOLLOW_UP" },
+      });
     return call;
   };
 
@@ -372,7 +379,7 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
       data: { leadId: lead.id, salesManagerId: managerId, scheduledFor: entry.callbackAt!, reason, comment: entry.description, createdAt: scheduledAt, updatedAt: scheduledAt },
     });
     await activity("CALLBACK_SCHEDULED", managerId, scheduledAt, { callbackId: callback.id, scheduledFor: entry.callbackAt!.toISOString() });
-    await notify(managerId, "LEAD_CALLBACK_REMINDER", `Пора перезвонить: ${displayName}`, entry.callbackAt!, { callbackId: callback.id }, true);
+    await notify(managerId, "LEAD_CALLBACK_REMINDER", entry.callbackAt!, { callbackId: callback.id, params: { leadName: displayName } }, true);
     state = {
       status: "RECALL",
       statusChangedAt: entry.history ? (declined ? new Date(bookedAt.getTime() + 5 * MINUTE) : entry.history.endTime) : scheduledAt,

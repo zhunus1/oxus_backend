@@ -1,8 +1,13 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { LeadCallbackStatus } from "generated/prisma/enums";
-import { IsISO8601, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
+import { LeadCallbackReason, LeadCallbackStatus } from "generated/prisma/enums";
+import { IsEnum, IsISO8601, IsIn, IsOptional, IsString, MaxLength, ValidateIf } from "class-validator";
 
 export class UpdateLeadCallbackDto {
+  @ApiPropertyOptional({ enum: LeadCallbackReason })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(LeadCallbackReason)
+  reason?: LeadCallbackReason;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsISO8601({ strict: true })

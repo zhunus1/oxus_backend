@@ -7,6 +7,8 @@ import { PrismaService } from "src/database/prisma.service";
 import { resolveUserIdFromJwtPayload } from "src/modules/admin/auth/jwt-user-id.util";
 import { validateCorsOrigin } from "src/configs/cors-origin";
 import { SALES_MANAGER_ROLE } from "../domain/lead.constants";
+import type { NotificationLog } from "generated/prisma/client";
+import { notificationPayload } from "../domain/notification-payload";
 
 const UNASSIGNED_ROOM = "sales:unassigned";
 
@@ -154,9 +156,10 @@ export class LeadRealtimeGateway implements OnModuleDestroy {
     this.server?.to(this.expertRoom(expertUserId)).emit("expert-call.removed", { callId });
   }
 
-  emitNotification(userId: number, notification: unknown) {
-    this.server?.to(this.salesManagerRoom(userId)).emit("notification.created", notification);
-    this.server?.to(this.expertRoom(userId)).emit("notification.created", notification);
+  emitNotification(userId: number, notification: NotificationLog) {
+    const payload = notificationPayload(notification);
+    this.server?.to(this.salesManagerRoom(userId)).emit("notification.created", payload);
+    this.server?.to(this.expertRoom(userId)).emit("notification.created", payload);
   }
 
   private salesManagerRoom(userId: number) {

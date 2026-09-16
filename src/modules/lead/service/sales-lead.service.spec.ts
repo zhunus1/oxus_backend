@@ -83,6 +83,18 @@ describe("SalesLeadService", () => {
     expect(emitLeadUpdated).not.toHaveBeenCalled();
   });
 
+  it("passes a reason-only update to persistence and refreshes the card without scheduling a new reminder", async () => {
+    findOwnedById.mockResolvedValue({ id: 8 });
+    const lead = { id: 8, callbackReason: "FOLLOW_UP" };
+    const callback = { id: 4, reason: "FOLLOW_UP" };
+    updateCallback.mockResolvedValue({ kind: "updated", lead, callback, notification: null });
+
+    await expect(service.updateCallback(17, 8, 4, { reason: "FOLLOW_UP" })).resolves.toEqual({ lead, callback });
+    expect(updateCallback).toHaveBeenCalledWith(4, 8, 17, expect.objectContaining({ reason: "FOLLOW_UP" }));
+    expect(emitLeadUpdated).toHaveBeenCalledWith(17, lead);
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
   it("returns a conflict instead of a 500 after an exhausted serialization retry", async () => {
     findOwnedById.mockResolvedValue({ id: 8 });
     updateCallback.mockRejectedValue(new ConflictException("The lead changed concurrently"));

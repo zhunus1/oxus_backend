@@ -71,14 +71,14 @@ export class LeadExpertCallService {
       }),
     ]);
     if (!lead || !expert?.consultantProfile) throw new NotFoundException("Lead or expert not found");
-    if (lead.contractId) throw new ConflictException("Lead is already being converted");
+    if (lead.contractId) throw new ConflictException({ statusCode: 409, error: "Conflict", code: "LEAD_CONTRACT_IN_PROGRESS", message: "Lead is already being converted" });
     assertLeadBookingTime(startTime, endTime, expert.timezone);
     const office = dto.format === "OFFICE" ? this.offices().find(o => o.code === dto.officeCode) : null;
     if (dto.format === "OFFICE" && !office) throw new BadRequestException("Office consultations are available only in Almaty and Shymkent; select an office");
     if (office) assertLeadOfficeCity(lead.submissions[0], office.code);
     if (dto.format === "ONLINE" && dto.officeCode) throw new BadRequestException("Online consultations cannot have an office");
     await this.assertConfiguredSlot(this.prisma, dto.expertUserId, expert.timezone, startTime, endTime);
-    await this.assertSlotAvailable(this.prisma, dto.expertUserId, expert.consultantProfile.id, startTime, endTime);
+    await this.assertSlotAvailable(this.prisma, dto.expertUserId, expert.consultantProfile.id, startTime, endTime, undefined, leadId);
     const invitation = await this.prisma.leadMeetingInvitation.create({
       data: {
         leadId,
@@ -217,8 +217,8 @@ export class LeadExpertCallService {
           channel: "IN_APP",
           type: "LEAD_EXPERT_CALL_REQUEST",
           status: "SENT",
-          content: "Новый запрос на созвон с лидом",
-          metadata: { callId: created.id },
+          content: "",
+          metadata: { callId: created.id, params: {} },
           scheduledFor: new Date(),
           sentAt: new Date(),
         },
@@ -381,8 +381,8 @@ export class LeadExpertCallService {
                 channel: "IN_APP",
                 type: "LEAD_EXPERT_CALL_REQUEST",
                 status: "SENT",
-                content: "Новый запрос на созвон с лидом",
-                metadata: { callId },
+                content: "",
+                metadata: { callId, params: {} },
                 scheduledFor: new Date(),
                 sentAt: new Date(),
               },
@@ -466,7 +466,7 @@ export class LeadExpertCallService {
             metadata: { callId: call.id, meetingId: meeting?.id ?? null },
           },
         });
-        const notification = await this.createManagerNotification(tx, call.salesManagerId, call.leadId, "Эксперт подтвердил созвон", call.id);
+        const notification = await this.createManagerNotification(tx, call.salesManagerId, call.leadId, "CONFIRMED", call.id);
         return { updated, notification };
       }
 
@@ -494,7 +494,7 @@ export class LeadExpertCallService {
           metadata: { callId: call.id, comment: dto.comment?.trim() ?? null },
         },
       });
-      const notification = await this.createManagerNotification(tx, call.salesManagerId, call.leadId, "Эксперт отклонил запрос на созвон", call.id);
+      const notification = await this.createManagerNotification(tx, call.salesManagerId, call.leadId, "DECLINED", call.id);
       return { updated, notification };
     });
 
@@ -538,7 +538,15 @@ export class LeadExpertCallService {
   }
 
   /** Rejects overlaps with consultations or active lead calls while the expert booking lock is held. */
-  private async assertSlotAvailable(tx: Prisma.TransactionClient, expertUserId: number, consultantProfileId: number, startTime: Date, endTime: Date, excludeCallId?: number) {
+  private async assertSlotAvailable(
+    tx: Prisma.TransactionClient,
+    expertUserId: number,
+    consultantProfileId: number,
+    startTime: Date,
+    endTime: Date,
+    excludeCallId?: number,
+    leadId?: number,
+  ) {
     const consultation = await tx.consultation.findFirst({
       select: { id: true },
       where: {
@@ -549,7 +557,7 @@ export class LeadExpertCallService {
       },
     });
     const leadCall = await tx.leadExpertCall.findFirst({
-      select: { id: true },
+      select: { id: true, leadId: true },
       where: {
         expertUserId,
         ...(excludeCallId == null ? {} : { id: { not: excludeCallId } }),
@@ -558,7 +566,10 @@ export class LeadExpertCallService {
         endTime: { gt: startTime },
       },
     });
-    if (consultation || leadCall) throw new ConflictException("This expert slot is already booked");
+    if (leadCall && leadId !== undefined && leadCall.leadId === leadId)
+      throw new ConflictException({ statusCode: 409, error: "Conflict", code: "LEAD_MEETING_ALREADY_SCHEDULED", message: "This expert slot is already booked" });
+    if (consultation || leadCall)
+      throw new ConflictException({ statusCode: 409, error: "Conflict", code: "EXPERT_SLOT_UNAVAILABLE", message: "This expert slot is already booked" });
   }
 
   /** Rejects missing, deleted, or non-expert users before listing requests. */
@@ -568,7 +579,7 @@ export class LeadExpertCallService {
   }
 
   /** Persists a delivered in-app response notification inside the call transaction. */
-  private createManagerNotification(tx: Prisma.TransactionClient, managerId: number, leadId: number, content: string, callId: number) {
+  private createManagerNotification(tx: Prisma.TransactionClient, managerId: number, leadId: number, response: "CONFIRMED" | "DECLINED", callId: number) {
     const now = new Date();
     return tx.notificationLog.create({
       data: {
@@ -577,8 +588,8 @@ export class LeadExpertCallService {
         channel: "IN_APP",
         type: "LEAD_EXPERT_CALL_RESPONSE",
         status: "SENT",
-        content,
-        metadata: { callId },
+        content: "",
+        metadata: { callId, params: { response } },
         scheduledFor: now,
         sentAt: now,
       },

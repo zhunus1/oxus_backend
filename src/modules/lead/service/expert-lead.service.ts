@@ -142,8 +142,8 @@ export class ExpertLeadService {
           status: "SENT",
           sentAt: new Date(),
           scheduledFor: new Date(),
-          content: `Лид ${lead.displayName ?? leadId} передан на дожим`,
-          metadata: { leadId, reason: dto.reason },
+          content: "",
+          metadata: { leadId, reason: dto.reason, params: { leadName: lead.displayName ?? null, leadId, reason: dto.reason } },
         },
       });
       return { lead: updated, call, notification };

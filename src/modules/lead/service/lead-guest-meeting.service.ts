@@ -17,7 +17,8 @@ export class LeadGuestMeetingService {
       include: { call: { include: { meeting: true, lead: { select: { deletedAt: true } } } } },
     });
     const call = invitation?.call;
-    if (!invitation || invitation.cancelledAt || !call || call.format !== "ONLINE" || call.lead.deletedAt) throw new NotFoundException("Meeting is not available");
+    if (!invitation || invitation.cancelledAt || !call || call.format !== "ONLINE" || call.lead.deletedAt)
+      throw new NotFoundException({ statusCode: 404, error: "Not Found", code: "MEETING_NOT_AVAILABLE", message: "Meeting is not available" });
     this.assertAccess(call);
     // The opaque invitation is a capability. Do not expose the lead's contacts or questionnaire.
     return this.jitsi.signLeadRoomToken(
@@ -46,8 +47,21 @@ export class LeadGuestMeetingService {
 
   /** Requires an active confirmed meeting between ten minutes before its start and its end. */
   private assertAccess(call: { status: string; startTime: Date; endTime: Date; meeting: { status: string } | null }) {
-    if (call.status !== "CONFIRMED" || call.meeting?.status !== "SCHEDULED") throw new ForbiddenException("Meeting is not confirmed or is no longer active");
-    if (Date.now() < call.startTime.getTime() - 10 * 60_000 || Date.now() >= call.endTime.getTime())
-      throw new ForbiddenException("Meeting access is available from 10 minutes before start until its end");
+    const now = Date.now();
+    const accessAvailableFrom = new Date(call.startTime.getTime() - 10 * 60_000);
+    const timing = { startTime: call.startTime.toISOString(), endTime: call.endTime.toISOString(), accessAvailableFrom: accessAvailableFrom.toISOString() };
+    if (call.status !== "CONFIRMED" || call.meeting?.status !== "SCHEDULED") {
+      const ended = call.status === "COMPLETED" || call.meeting?.status === "COMPLETED" || now >= call.endTime.getTime();
+      const code = ended ? "MEETING_ENDED" : call.status === "REQUESTED" ? "MEETING_NOT_CONFIRMED" : "MEETING_INACTIVE";
+      throw new ForbiddenException({ statusCode: 403, error: "Forbidden", code, message: "Meeting is not confirmed or is no longer active", ...timing });
+    }
+    if (now < accessAvailableFrom.getTime() || now >= call.endTime.getTime())
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: "Forbidden",
+        code: now >= call.endTime.getTime() ? "MEETING_ENDED" : "MEETING_ACCESS_NOT_OPEN",
+        message: "Meeting access is available from 10 minutes before start until its end",
+        ...timing,
+      });
   }
 }

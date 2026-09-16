@@ -193,8 +193,8 @@ export class SalesLeadRepository {
           channel: "IN_APP",
           type: "LEAD_CALLBACK_REMINDER",
           status: "PENDING",
-          content: `Пора перезвонить: ${owned.displayName ?? "клиент"}`,
-          metadata: { callbackId: callback.id },
+          content: "",
+          metadata: { callbackId: callback.id, params: { leadName: owned.displayName ?? null } },
           scheduledFor,
         },
       });
@@ -216,8 +216,13 @@ export class SalesLeadRepository {
     });
   }
 
-  /** Edits an active callback; changes to comments alone preserve the existing reminder. */
-  async updateCallback(callbackId: number, leadId: number, managerId: number, data: { scheduledFor?: Date; status?: LeadCallbackStatus; comment?: string }) {
+  /** Edits an active callback; comment and reason changes preserve the existing reminder. */
+  async updateCallback(
+    callbackId: number,
+    leadId: number,
+    managerId: number,
+    data: { scheduledFor?: Date; status?: LeadCallbackStatus; comment?: string; reason?: LeadCallbackReason },
+  ) {
     return leadTransaction(this.prisma, async tx => {
       const owned = await this.requireMutableOwned(tx, leadId, managerId);
       const existing = await tx.leadCallback.findFirst({
@@ -235,6 +240,7 @@ export class SalesLeadRepository {
         data: {
           scheduledFor,
           comment: data.comment,
+          ...(data.reason !== undefined ? { reason: data.reason } : {}),
           status,
           completedAt: status === LeadCallbackStatus.COMPLETED ? new Date() : null,
           cancelledAt: status === LeadCallbackStatus.CANCELLED ? new Date() : null,
@@ -257,8 +263,8 @@ export class SalesLeadRepository {
                 channel: "IN_APP",
                 type: "LEAD_CALLBACK_REMINDER",
                 status: "PENDING",
-                content: `Пора перезвонить: ${owned.displayName ?? "клиент"}`,
-                metadata: { callbackId },
+                content: "",
+                metadata: { callbackId, params: { leadName: owned.displayName ?? null } },
                 scheduledFor,
               },
             })
@@ -269,16 +275,19 @@ export class SalesLeadRepository {
           leadId,
           actorUserId: managerId,
           type: LEAD_ACTIVITY.CALLBACK_UPDATED,
-          metadata: { callbackId, status, scheduledFor: scheduledFor.toISOString() },
+          metadata: { callbackId, status, scheduledFor: scheduledFor.toISOString(), ...(data.reason !== undefined ? { reason: data.reason } : {}) },
         },
       });
 
       const lead =
-        status === LeadCallbackStatus.SCHEDULED
+        status === LeadCallbackStatus.SCHEDULED && data.reason === undefined
           ? await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: salesLeadDetailInclude })
           : await tx.lead.update({
               where: { id: leadId },
-              data: leadStatusUpdate(owned.status, owned.assignedExpertUserId ? LeadStatus.RECALL : LeadStatus.NEW),
+              data: {
+                ...(status !== LeadCallbackStatus.SCHEDULED ? leadStatusUpdate(owned.status, owned.assignedExpertUserId ? LeadStatus.RECALL : LeadStatus.NEW) : {}),
+                ...(data.reason !== undefined ? { callbackReason: data.reason } : {}),
+              },
               include: salesLeadDetailInclude,
             });
 
