@@ -21,6 +21,7 @@ export class ExpertDashboardRepository extends BaseRepository {
         id: true,
         firstname: true,
         lastname: true,
+        middlename: true,
         email: true,
         phoneNumber: true,
         createdAt: true,
@@ -41,7 +42,7 @@ export class ExpertDashboardRepository extends BaseRepository {
   } satisfies Prisma.StudentPortraitInclude;
 
   private readonly studentInclude = {
-    user: { select: { id: true, firstname: true, lastname: true, timezone: true } },
+    user: { select: { id: true, firstname: true, lastname: true, middlename: true, timezone: true } },
     targetPrograms: {
       include: { organisation: { select: { id: true, nameEn: true, nameRu: true, slug: true, country: true } } },
       orderBy: { deadline: { sort: "asc", nulls: "last" } as const },

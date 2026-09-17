@@ -116,3 +116,23 @@ See [`deployment/README.md`](deployment/README.md) for the first Test deployment
 ## Sales Manager CRM
 
 The backend contract for landing-calculator ingestion, Sales Manager ownership, callbacks, expert calls, notifications, and realtime events is documented in [`docs/sales-manager-crm.md`](docs/sales-manager-crm.md).
+
+### Student name when preparing a CRM contract
+
+`POST /api/v1/expert/leads/:leadId/contract` accepts separate student name fields:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `lastname` | Yes | Family name |
+| `firstname` | Yes | Given name |
+| `middlename` | No | Patronymic, up to 100 characters after trimming |
+
+The other contract fields (email, phone, tariff, price and currency) remain required as before. For a parent lead, these name fields belong to the student, not the parent. No full-name string is split automatically.
+
+Omitted, `null`, empty or whitespace-only patronymics are stored as `null` for new accounts. Existing requests without `middlename` remain valid. Reusing a matching student still requires explicit `existingStudentId` confirmation: preparation only fills a missing patronymic on an unlocked identity; it never overwrites a saved patronymic or changes a locked identity. Retrying an already prepared contract does not update the name.
+
+The student's `middlename` is returned with the user profile (`GET /api/v1/auth/me`), in `contract.student` from the contract detail/list endpoints, and in expert student lists. The preparation response retains its existing contract summary; read the student's name via `GET /api/v1/contracts/student/:studentId`. `PATCH /api/v1/account/me` accepts the same optional field: omission preserves the current value, while `null` or a blank string clears it.
+
+Student signing still accepts the existing `clientFullName` and `studentName` strings. The frontend can join the separate name fields for those strings, omitting an absent patronymic; parent signer details remain separate from the student's profile.
+
+Deploy migration `20260916160000_add_user_middlename` before starting the new backend. It adds a nullable column without changing existing names. When rolling back application code, retain the column to preserve saved patronymics.

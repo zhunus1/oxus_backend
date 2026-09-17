@@ -5,6 +5,7 @@ export const ADMIN_USER_LIST_SELECT = {
   id: true,
   firstname: true,
   lastname: true,
+  middlename: true,
   email: true,
   phoneNumber: true,
   createdAt: true,

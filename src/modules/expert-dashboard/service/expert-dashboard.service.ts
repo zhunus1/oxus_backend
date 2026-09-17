@@ -61,6 +61,7 @@ export class ExpertDashboardService {
       id: number;
       firstname: string;
       lastname: string;
+      middlename: string | null;
       email: string;
       phoneNumber: string | null;
       createdAt: Date;
@@ -74,6 +75,7 @@ export class ExpertDashboardService {
       userId: portrait.user.id,
       firstname: portrait.user.firstname,
       lastname: portrait.user.lastname,
+      middlename: portrait.user.middlename,
       email: portrait.user.email,
       phoneNumber: portrait.user.phoneNumber,
       registeredAt: portrait.user.createdAt.toISOString(),

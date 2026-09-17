@@ -56,6 +56,7 @@ export class AccountService {
         data: {
           ...(dto.firstname !== undefined ? { firstname: dto.firstname } : {}),
           ...(dto.lastname !== undefined ? { lastname: dto.lastname } : {}),
+          ...(dto.middlename !== undefined ? { middlename: dto.middlename?.trim() || null } : {}),
           ...(dto.email !== undefined ? { email: dto.email } : {}),
           ...(dto.phoneNumber !== undefined ? { phoneNumber: dto.phoneNumber } : {}),
           ...(dto.countryId !== undefined ? { countryId: dto.countryId } : {}),

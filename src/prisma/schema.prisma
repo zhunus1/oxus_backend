@@ -184,6 +184,7 @@ model User {
 
   firstname   String
   lastname    String
+  middlename  String?
   email       String  @unique
   phoneNumber String? @unique
   password    String

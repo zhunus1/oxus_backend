@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { Type } from "class-transformer";
-import { IsEmail, IsInt, IsOptional, IsPositive, IsString, Matches, MinLength, ValidateIf } from "class-validator";
+import { Transform, Type } from "class-transformer";
+import { IsEmail, IsInt, IsOptional, IsPositive, IsString, Matches, MaxLength, MinLength, ValidateIf } from "class-validator";
 import messages from "src/configs/messages";
 
 export class UpdateAccountProfileDto {
@@ -15,6 +15,13 @@ export class UpdateAccountProfileDto {
   @IsString({ message: messages.MUST_BE_STRING("lastname") })
   @MinLength(1, { message: messages.REQUIRED_FIELD("lastname") })
   lastname?: string;
+
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 100, description: "Patronymic; null or blank clears the value, omission preserves it" })
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() || null : value))
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  middlename?: string | null;
 
   @ApiPropertyOptional({ example: "student@example.com" })
   @IsOptional()

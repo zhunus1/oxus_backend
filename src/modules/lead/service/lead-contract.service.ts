@@ -23,6 +23,7 @@ export class LeadContractService {
   async prepare(expertId: number, leadId: number, dto: PrepareLeadContractDto) {
     const phoneNumber = normalizePhoneNumber(dto.phone);
     const email = dto.email.trim().toLowerCase();
+    const middlename = dto.middlename?.trim() || null;
     if (!phoneNumber || !dto.firstname.trim() || !dto.lastname.trim()) throw new BadRequestException("Student name and valid phone are required");
     if (dto.subscriptionTier === "FREE") throw new BadRequestException("Select a paid tariff");
     if (dto.serviceStartDate && dto.serviceEndDate && new Date(dto.serviceEndDate) <= new Date(dto.serviceStartDate))
@@ -47,8 +48,10 @@ export class LeadContractService {
       const users = await tx.user.findMany({ where: { OR: [{ email: { equals: email, mode: "insensitive" } }, { phoneNumber }] }, include: { role: true, portrait: true } });
       let student = users[0];
       if (users.length) {
-        if (users.length !== 1 || student.email.toLowerCase() !== email || student.phoneNumber !== phoneNumber)
-          throw new ConflictException("Existing account requires explicit identity confirmation with matching email and phone");
+        if (users.length !== 1 || student.email.toLowerCase() !== email || student.phoneNumber !== phoneNumber) {
+          const emailExists = users.some(user => user.email.toLowerCase() === email);
+          throw new ConflictException(emailExists ? "Пользователь с такой электронной почтой уже существует." : "Пользователь с таким номером телефона уже существует.");
+        }
         if (student.deletedAt || !["STUDENT", "SCHOOLBOY"].includes(student.role.code)) throw new ConflictException("Account cannot be used as a student");
         if (student.portrait?.consultantProfileId && student.portrait.consultantProfileId !== expert.id)
           throw new ConflictException("Student belongs to another expert; use the existing transfer process");
@@ -64,12 +67,16 @@ export class LeadContractService {
         const role = await tx.role.findUnique({ where: { code: "STUDENT" } });
         if (!role) throw new ConflictException("Student role is not configured");
         student = await tx.user.create({
-          data: { firstname: dto.firstname.trim(), lastname: dto.lastname.trim(), email, phoneNumber, password, roleId: role.id, citizenshipCountryId },
+          data: { firstname: dto.firstname.trim(), lastname: dto.lastname.trim(), middlename, email, phoneNumber, password, roleId: role.id, citizenshipCountryId },
           include: { role: true, portrait: true },
         });
       }
-      if (users.length && !student.citizenshipCountryId && !student.portrait?.isIdentityLocked && citizenshipCountryId) {
-        await tx.user.update({ where: { id: student.id }, data: { citizenshipCountryId } });
+      if (users.length && !student.portrait?.isIdentityLocked) {
+        const identity: Prisma.UserUpdateInput = {
+          ...(!student.citizenshipCountryId && citizenshipCountryId ? { citizenshipCountryId } : {}),
+          ...(!student.middlename && middlename ? { middlename } : {}),
+        };
+        if (Object.keys(identity).length) await tx.user.update({ where: { id: student.id }, data: identity });
       }
       const previousMeta = student.portrait?.meta;
       let preservedMeta: Prisma.JsonObject = {};

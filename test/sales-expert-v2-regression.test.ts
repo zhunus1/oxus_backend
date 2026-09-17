@@ -29,6 +29,10 @@ import { LeadExpertCallService } from "../src/modules/lead/service/lead-expert-c
 import { LeadNotificationService } from "../src/modules/lead/service/lead-notification.service";
 import { LeadNotificationProcessor } from "../src/modules/lead/service/lead-notification.processor";
 import type { MailService } from "../src/modules/mail/mail.service";
+import { AccountService } from "../src/modules/account/account.service";
+import { UsersRepository } from "../src/modules/admin/users/repository/users.repository";
+import { UserEntity } from "../src/modules/admin/users/api/dto/user.entity";
+import { instanceToPlain } from "class-transformer";
 
 // Deliberately refuse production URLs, including the application's usual REDIS_URL.
 const databaseUrl = new URL(process.env.DATABASE_URL ?? "");
@@ -269,6 +273,72 @@ test("P2: a new student's citizenship reaches the canonical User field", async (
   const { result } = await prepareStudent({ citizenshipCountryId: countryId, birthDate: "2008-04-17" });
   const user = await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } });
   assert.equal(user.citizenshipCountryId, countryId);
+});
+
+test("middlename: contract preparation persists three name fields and retries preserve them", async () => {
+  const lead = await readyLead();
+  const dto = { ...identity(), firstname: "Алия", lastname: "Омарова", middlename: "  Серік қызы  " };
+  const result = await contracts.prepare(expertId, lead.id, dto);
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } });
+  assert.equal(user.firstname, "Алия");
+  assert.equal(user.lastname, "Омарова");
+  assert.equal(user.middlename, "Серік қызы");
+
+  const repo = Object.assign(new ContractRepository(), { prisma });
+  const contract = (await repo.findByStudentId(user.id)) as unknown as { student: { middlename: string | null } };
+  assert.equal(contract.student.middlename, user.middlename);
+  const listed = (await repo.findAllByStatus("PENDING_EXPERT", expertId)) as unknown as { id: string; student: { middlename: string | null } }[];
+  assert.equal(listed.find(item => item.id === result.contract.id)?.student.middlename, user.middlename);
+
+  const users = new UsersRepository(prisma);
+  const profile = instanceToPlain(new UserEntity((await users.findById(user.id))!));
+  assert.equal(profile.middlename, user.middlename);
+  assert(!("password" in profile));
+
+  const retry = await contracts.prepare(expertId, lead.id, { ...dto, middlename: "Другое" });
+  assert.equal(retry.contract.id, result.contract.id);
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).middlename, user.middlename);
+});
+
+for (const middlename of [undefined, null, "", "   "]) {
+  test(`middlename: new account accepts ${JSON.stringify(middlename)} without inventing a name`, async () => {
+    const lead = await readyLead();
+    const result = await contracts.prepare(expertId, lead.id, { ...identity(), middlename });
+    assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } })).middlename, null);
+  });
+}
+
+for (const isIdentityLocked of [false, true]) {
+  for (const previous of [null, "Сохранённое"]) {
+    test(`middlename: reuse preserves identity (locked=${isIdentityLocked}, previous=${previous})`, async () => {
+      const user = await createUser("STUDENT");
+      await prisma.user.update({ where: { id: user.id }, data: { middlename: previous } });
+      await prisma.studentPortrait.create({ data: { userId: user.id, isIdentityLocked } });
+      const lead = await readyLead();
+      const dto = { ...identity(), email: user.email, phone: user.phoneNumber!, middlename: "Новое" };
+      await assert.rejects(contracts.prepare(expertId, lead.id, dto), /Confirm reuse/);
+      assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).middlename, previous);
+
+      await contracts.prepare(expertId, lead.id, { ...dto, existingStudentId: user.id });
+      const saved = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      assert.equal(saved.middlename, isIdentityLocked || previous ? previous : "Новое");
+      assert.equal(saved.firstname, user.firstname);
+      assert.equal(saved.lastname, user.lastname);
+      assert.equal(saved.password, user.password);
+    });
+  }
+}
+
+test("middlename: account updates support setting, omission and explicit clearing", async () => {
+  const user = await createUser("STUDENT");
+  const account = new AccountService(prisma);
+  const updated = await account.updateProfile(user.id, { middlename: "  Сериковна  " });
+  assert.equal(updated.middlename, "Сериковна");
+  assert(!("password" in instanceToPlain(updated)));
+  assert.equal((await account.updateProfile(user.id, { firstname: "Алия" })).middlename, "Сериковна");
+  assert.equal((await account.updateProfile(user.id, { middlename: null })).middlename, null);
+  await account.updateProfile(user.id, { middlename: "Сериковна" });
+  assert.equal((await account.updateProfile(user.id, { middlename: "   " })).middlename, null);
 });
 
 test("control: a new portrait retains birth date and the complete questionnaire without invented language levels", async () => {

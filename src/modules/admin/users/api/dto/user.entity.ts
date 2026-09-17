@@ -5,6 +5,7 @@ export class UserEntity implements Partial<User> {
   id: number;
   firstname: string;
   lastname: string;
+  middlename: string | null;
   email: string;
   phoneNumber: string | null;
   organisationId: number | null;

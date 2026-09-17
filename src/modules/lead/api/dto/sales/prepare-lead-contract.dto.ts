@@ -14,6 +14,12 @@ export class PrepareLeadContractDto extends OmitType(CreateContractForStudentDto
   @MinLength(1)
   @MaxLength(100)
   lastname: string;
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 100, description: "Student patronymic; omitted, null or blank means no patronymic" })
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() || null : value))
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  middlename?: string | null;
   @ApiProperty()
   @Transform(({ value }) => (typeof value === "string" ? value.trim().toLowerCase() : value))
   @IsEmail()

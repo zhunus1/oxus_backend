@@ -8,7 +8,7 @@ import { Contract, ContractStatus } from "generated/prisma/client";
 import { CreateContractForStudentDto } from "../api/dto/create-contract-for-student.dto";
 
 export const CONTRACT_INCLUDE = {
-  student: { select: { id: true, firstname: true, lastname: true, email: true, phoneNumber: true } },
+  student: { select: { id: true, firstname: true, lastname: true, middlename: true, email: true, phoneNumber: true } },
   signedByUser: { select: { id: true, firstname: true, lastname: true, email: true } },
 } as const;
 
@@ -40,7 +40,7 @@ export class ContractRepository extends BaseRepository {
   async findPendingStudent(): Promise<Contract[]> {
     return this.prisma.contract.findMany({
       where: { status: ContractStatus.PENDING_STUDENT },
-      include: { student: { select: { id: true, firstname: true, lastname: true, email: true, phoneNumber: true } } },
+      include: { student: CONTRACT_INCLUDE.student },
       orderBy: { expertSignedAt: "asc" },
     });
   }
@@ -49,7 +49,7 @@ export class ContractRepository extends BaseRepository {
   async findAllByStatus(status?: ContractStatus, expertId?: number): Promise<Contract[]> {
     return this.prisma.contract.findMany({
       where: { ...(status ? { status } : {}), ...(expertId ? { OR: [{ lead: null }, { lead: { assignedExpertUserId: expertId } }] } : {}) },
-      include: { student: { select: { id: true, firstname: true, lastname: true, email: true } } },
+      include: { student: { select: { id: true, firstname: true, lastname: true, middlename: true, email: true } } },
       orderBy: { createdAt: "desc" },
     });
   }
