@@ -1,7 +1,6 @@
 # Version control and local tooling
 .git
 .gitignore
-.gitlab-ci.yml
 .claude
 .vscode
 .idea
@@ -30,6 +29,8 @@ coverage
 .tmp
 tmp
 temp
+__pycache__
+release-artifact
 oxus-*-artifacts.tar.gz
 package.server.json
 yarn.lock.server

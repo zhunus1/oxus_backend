@@ -96,22 +96,14 @@ yarn build
 
 ## Deployment
 
-Deployment configuration is stored in `deployment/`. The current server stack is intentionally backend-only: backend, PostgreSQL, Redis, MinIO, Browserless, and a one-shot Prisma migrator. Frontend applications are deployed separately when their source repositories are available.
+Changes go through `feature/*` → PR to `test` → Test deployment → PR to `main` → Production deployment.
 
-Successful pushes to `main` publish two image tags to GitHub Container Registry:
+- PRs run lint, tests and application/Docker builds without deploying.
+- Pushes to `test` publish `ghcr.io/zhunus1/oxus_backend:test` and `:sha-<commit>`, then deploy the exact image digest to Test.
+- Pushes to `main` automatically promote an already successful Test image whose source files exactly match `main`. Production does not rebuild the image or follow a mutable tag.
+- Each server keeps its own `.env`, Jitsi key, Compose configuration, database and media. Production gets a database backup before migrations; CI never imports Test data into Production.
 
-- `ghcr.io/zhunus1/oxus_backend:test` for the current Test release;
-- `ghcr.io/zhunus1/oxus_backend:sha-<commit>` for an immutable commit-specific release.
-
-On the server, copy `deployment/.env.example` to `deployment/.env`, replace every placeholder with server-specific values, add `deployment/jitsi-private-key.pk`, authenticate Docker to GHCR, and run:
-
-```bash
-./deployment/deploy.sh
-```
-
-The deploy script validates the Compose configuration, pulls images, applies Prisma migrations, starts the stack, and fails if the backend health endpoint does not become ready within three minutes. Host Nginx forwards `/api` to the backend and `/storage` to MinIO; `/` returns `503` until a frontend is deployed.
-
-See [`deployment/README.md`](deployment/README.md) for the first Test deployment, GHCR login, HTTPS setup, updates, and rollback procedure.
+Deployment scripts and release verification live in `deployment/`. Before activating the workflows, install the updated server script on both servers and configure two SSH secrets in each GitHub environment (`test` and `production`). See [deployment setup, secrets and recovery](deployment/README.md).
 
 ## Sales Manager CRM
 
