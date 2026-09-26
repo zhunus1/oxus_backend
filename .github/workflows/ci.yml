@@ -1,10 +1,12 @@
-# Validates every pull request. Successful main builds publish and deploy the Test image.
+# test publishes and deploys a new image; main promotes an already tested image.
 name: CI
 
 on:
   pull_request:
+    branches: [test, main]
   push:
     branches:
+      - test
       - main
   workflow_dispatch:
 
@@ -13,7 +15,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci
@@ -25,6 +27,15 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Require release PRs to come from test
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          test "$SOURCE_BRANCH" = test
+          test "$SOURCE_REPOSITORY" = "$GITHUB_REPOSITORY"
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -53,7 +64,11 @@ jobs:
         run: yarn build
 
       - name: Validate deployment shell script
-        run: sh -n deployment/deploy.sh
+        run: |
+          bash -n deployment/deploy.sh
+          bash -n deployment/ssh-deploy.sh
+          bash -n deployment/install-ci.sh
+          python3 -m unittest discover -s deployment/tests -v
 
       - name: Validate local Compose configuration
         run: docker compose -f compose.yaml config --quiet
@@ -64,6 +79,9 @@ jobs:
   docker:
     name: Build and publish Test Docker image
     needs: quality
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/test'
+    outputs:
+      image: ${{ steps.reference.outputs.image }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -78,18 +96,19 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/test'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image and publish successful main builds
+      - name: Build image and publish successful test builds
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/test' }}
           tags: |
             ghcr.io/${{ github.repository }}:test
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
@@ -99,12 +118,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Record immutable image reference
+        id: reference
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/test'
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}@${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"
+
   deploy-test:
     name: Deploy to Test server
     needs: docker
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/test'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment:
       name: test
       url: https://test.oxusedu.com
@@ -112,33 +138,83 @@ jobs:
       contents: read
 
     steps:
-      - name: Configure deployment SSH key
-        env:
-          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
-          TEST_SSH_KNOWN_HOSTS: ${{ secrets.TEST_SSH_KNOWN_HOSTS }}
-        run: |
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" > "$HOME/.ssh/oxus_backend_test_deploy"
-          chmod 600 "$HOME/.ssh/oxus_backend_test_deploy"
-          printf '%s\n' "$TEST_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Deploy published image
-        run: |
-          ssh \
-            -i "$HOME/.ssh/oxus_backend_test_deploy" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            oxusdeploy@test.oxusedu.com \
-            'sudo /opt/oxus_backend/deployment/deploy.sh'
+      - name: Deploy exact image to Test
+        env:
+          DEPLOY_IMAGE: ${{ needs.docker.outputs.image }}
+          DEPLOY_ENVIRONMENT: test
+          DEPLOY_HOST: test.oxusedu.com
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.TEST_SSH_KNOWN_HOSTS }}
+        run: bash deployment/ssh-deploy.sh
 
       - name: Verify public Test API
+        run: curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors --max-time 10 https://test.oxusedu.com/api/v1/health
+
+      - name: Record successfully tested release
+        env:
+          DEPLOY_IMAGE: ${{ needs.docker.outputs.image }}
+        run: python3 deployment/release.py record
+
+      - name: Save tested release for production promotion
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-release
+          path: release-artifact/release.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  deploy-production:
+    name: Deploy to Production server
+    needs: quality
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://oxusedu.com
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out the main release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select a successful Test release with identical source files
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deployment/release.py select
+
+      - name: Check that this main release is still current
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --retry 12 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            https://test.oxusedu.com/api/v1/health
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'A newer main commit exists; this deployment is superseded.'
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Promote tested image to Production
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          DEPLOY_IMAGE: ${{ steps.release.outputs.image }}
+          DEPLOY_ENVIRONMENT: production
+          DEPLOY_HOST: 87.106.144.28
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: bash deployment/ssh-deploy.sh
+
+      - name: Verify public Production API
+        if: steps.current.outputs.deploy == 'true'
+        run: curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors --max-time 10 https://oxusedu.com/api/v1/health

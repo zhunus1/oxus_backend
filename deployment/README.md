@@ -1,110 +1,153 @@
-# Backend-only server deployment
+# Test and Production deployment
 
-This directory deploys the OxusEdu backend and its private infrastructure. It does not deploy the student, expert, or admin frontends.
+## Release flow
 
-The same application image is used in every environment. Runtime behavior comes from the server-only `.env` file: Test uses `STAGING=true`; Production must use `STAGING=false` and an immutable release tag.
+| Change               | Behaviour                                                                        |
+| -------------------- | -------------------------------------------------------------------------------- |
+| PR to `test`         | Lint, tests, application and Docker builds; no deployment                        |
+| Push/merge to `test` | Build and publish an image, deploy its exact digest to Test                      |
+| PR `test` → `main`   | Validate the release; other source branches are rejected                         |
+| Push/merge to `main` | Run checks, then automatically promote a successfully tested image to Production |
 
-## Included services
+Production does **not** build a second image or deploy the moving `:test` tag.
+After a successful Test deployment, CI stores `tested-release/release.json` as a
+GitHub Actions artifact for 90 days. It records the run/attempt, source commit,
+Git tree and image digest. Production selects a successful Test CI run whose Git
+tree exactly matches the `main` commit. A merge or squash commit can have a different
+SHA while containing identical files. If the files differ, the artifact expired,
+or Test failed, Production is not deployed. Sync `main` into `test`, deploy Test
+again and release the matching code; do not bypass this check with a mutable tag.
 
-- NestJS backend on host loopback port `4000`
-- PostgreSQL with a persistent volume
-- Redis with a persistent volume
-- MinIO with a persistent volume and loopback-only API/console ports
-- Browserless Chrome on the private Compose network
-- A one-shot Prisma migration service
+Workflows are serialized per branch without cancelling an in-progress deployment.
+The server also takes an exclusive lock. A superseded `main` run is skipped before
+connecting to Production. The GitLab pipeline has been removed.
 
-Only host Nginx accepts public traffic. It forwards `/api` to the backend and `/storage/` to MinIO. All database, Redis, and Browserless ports remain private.
+## Existing server layout
 
-Email notifications for expert calls use the existing SMTP and Redis configuration. See [call notification setup and behavior](lead-call-notifications.md).
+|                       | Test                                   | Production                     |
+| --------------------- | -------------------------------------- | ------------------------------ |
+| SSH host              | `test.oxusedu.com` / `217.154.218.174` | `87.106.144.28`                |
+| Directory             | `/opt/oxus_backend/deployment`         | `/opt/oxus_backend/deployment` |
+| Compose project       | `oxus_backend`                         | `oxus_backend`                 |
+| Backend loopback port | `4000`                                 | `4100`                         |
+| MinIO API/console     | `9000` / `9090`                        | `9100` / `9190`                |
+| Environment           | `STAGING=true`                         | `STAGING=false`                |
 
-## First Test deployment
+The server's `.env`, Jitsi key, Compose files, volumes and host Nginx are retained.
+`deploy.sh` includes `compose.override.yaml` when present, so the existing production
+image pins and MinIO credentials are preserved. CI does not copy these files.
+Frontend and landing deployments are independent of this backend workflow.
 
-Push the repository changes to `main` and wait for the GitHub Actions workflow to publish:
+## One-time rollout of this CI change
 
-```text
-ghcr.io/zhunus1/oxus_backend:test
-```
+Install the new server script **before pushing the new workflow to `test`**. The
+old server script does not accept an immutable image argument. The new SSH client
+requires the new script's exact success message and cannot certify an old deploy.
 
-Copy this directory to `/opt/oxus_backend/deployment` on the Test server. Then create the server-only environment file:
+1. Copy `deployment/deploy.sh` and `deployment/install-ci.sh` into a temporary,
+   root-owned directory on **both servers**. Run `bash install-ci.sh` there as root.
+   This backs up the old script under `/var/backups/oxus-ci-setup-*`, installs the
+   new root-owned script and grants `oxusdeploy` sudo access to that script only.
+   It does not start a deployment or replace Compose, `.env`, keys or Nginx.
+2. Keep the existing Test SSH key and `TEST_SSH_*` secrets. On Production, add a
+   separate Actions Ed25519 public key: `bash install-ci.sh /root/oxus-prod-actions.pub`.
+   The installer creates `oxusdeploy` if necessary, preserves existing authorized
+   keys and adds the new key with SSH forwarding/PTY restrictions. Never give the
+   CI account ownership of deployment configuration or membership in `docker`.
+3. Configure the GitHub environments and their secrets below.
+4. Commit these changes to `test` and push it. Wait for **the entire Test CI run**
+   to succeed and produce the `tested-release` artifact. Check Test functionality.
+5. Open a PR from `test` to `main`. Merging it enables the new main workflow and
+   triggers Production promotion automatically after quality checks.
 
-```bash
-cd /opt/oxus_backend/deployment
-cp .env.example .env
-chmod 600 .env
-nano .env
-```
+The first rollout can be a PR that introduces this workflow into `main`; the Test
+artifact must already exist before merging. Keep `main` as the default branch.
+If the existing Test environment allows deployments only from `main`, change its
+allowed branch to `test` before the first Test push.
 
-Generate independent URL-safe secrets for JWT, PostgreSQL, Redis, and MinIO. `openssl rand -hex 32` produces a suitable value; run it separately for every secret.
+## GitHub settings
 
-The application reads the Jitsi private key during startup. Use the private key that belongs to the Test JaaS application. If Test JaaS is not configured yet, a temporary RSA key allows the backend to start, but meeting tokens will not work with JaaS:
+Settings → Environments:
 
-```bash
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jitsi-private-key.pk
-chown 1001:1001 jitsi-private-key.pk
-chmod 400 jitsi-private-key.pk
-```
+| Environment | Allowed deployment branch | Environment secrets |
+| ----------- | ------------------------- | ------------------- |
+| `test` | `test` | `TEST_SSH_PRIVATE_KEY`, `TEST_SSH_KNOWN_HOSTS` |
+| `production` | `main` | `PROD_SSH_PRIVATE_KEY`, `PROD_SSH_KNOWN_HOSTS` |
 
-For a private GHCR package, create a GitHub token with `read:packages` only. Enter it without putting it in shell history:
+Each deployment job references its GitHub environment, making that environment's
+two SSH secrets available to the job. Keep the existing secrets in `test` and add
+the two Production secrets in `production`. Additional secrets or variables are
+not required: SSH hosts are set in the workflow to `test.oxusedu.com` for Test and
+`87.106.144.28` for Production. Select the matching allowed branch in each
+environment; leave required reviewers and wait timers disabled for automatic
+deployment. Also protect branches as described below.
 
-```bash
-read -rsp 'GHCR token: ' OXUS_GHCR_TOKEN
-printf '%s' "$OXUS_GHCR_TOKEN" | docker login ghcr.io -u zhunus1 --password-stdin
-unset OXUS_GHCR_TOKEN
-```
-
-Deploy and wait for the health check:
-
-```bash
-./deploy.sh
-```
-
-The expected final state is a healthy `backend`, `db`, `redis`, and `minio`; a running `chrome`; and a successfully exited `migrator`.
-
-## Host Nginx and HTTPS
-
-Install `nginx.conf` as a host configuration. Preserve the distribution default instead of deleting it:
-
-```bash
-cp nginx.conf /etc/nginx/conf.d/oxus-backend.conf
-mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.disabled
-nginx -t
-systemctl reload nginx
-```
-
-After all three DNS records resolve to the Test server, install Certbot and request one certificate:
-
-```bash
-apt update
-apt install -y certbot python3-certbot-nginx
-certbot --nginx --redirect \
-  -d test.oxusedu.com \
-  -d expert.test.oxusedu.com \
-  -d admin.test.oxusedu.com
-```
-
-Verify the public health endpoint:
-
-```bash
-curl -fsS https://test.oxusedu.com/api/v1/health
-```
-
-The root URL intentionally returns `503` until a frontend is deployed.
-
-## Updating and rolling back
-
-The CI deploy job runs the existing `/opt/oxus_backend/deployment/deploy.sh` on the server; it does not copy deployment files from Git. When `compose.yaml` or `deploy.sh` changes, update the corresponding server file before deploying. Preserve the server's `.env` and private key.
-
-MinIO uses the pinned `quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z` image. If an older server Compose file still uses `minio/minio:RELEASE.2025-06-13T11-33-47Z`, replace that image reference with the Quay reference before retrying deployment. The release tag and volume configuration stay the same.
-
-For the separate, manually invoked 36-lead Sales / Expert demo after deployment, see [Sales / Expert demo](sales-expert-demo.md). The normal deploy and migrator do not seed these records.
-
-After a successful `main` build, update Test with:
+The private SSH key belongs in the corresponding GitHub secret, never in Git or chat.
+Obtain the production host key **through your existing trusted SSH connection**:
 
 ```bash
-cd /opt/oxus_backend/deployment
-./deploy.sh
+# Run on Production; the printed host key is public.
+awk '{print "87.106.144.28 " $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-For rollback, change `BACKEND_IMAGE` in `.env` from `:test` to a previously published `:sha-<commit>` tag and run `./deploy.sh` again. Database migrations must remain backward-compatible with the selected application version.
+Put that line into `PROD_SSH_KNOWN_HOSTS`. The workflow uses strict host-key checking.
+It connects as `oxusdeploy`. Docker must be able to pull the package as root on each
+server; for a private package, authenticate root to GHCR with `read:packages`.
 
-Never run `docker compose down -v` on a server unless permanent deletion of PostgreSQL, Redis, and MinIO data is explicitly intended.
+Protect `main` and `test` with PRs and required checks. For `main`, require
+`Install, lint, test, and build` and `Build and publish Test Docker image` from the PR,
+block force pushes/deletion, and do not permit direct pushes to bypass the release
+PR check. Set review requirements to match your actual team; a solo maintainer
+should not require an approval they cannot provide. Use merge commits for ongoing
+`test` → `main` releases to keep branch history easy to maintain.
+
+## What a deployment does
+
+The server script validates `test|production`, the repository and digest, and checks
+that the selected environment matches `STAGING` in the server configuration. It:
+
+1. Pulls only backend and migrator images before downtime.
+2. Saves the previous configuration and image reference under `/var/backups/oxus-release-*`.
+3. Stops the backend. On Production, takes a PostgreSQL custom-format dump and
+   checks that `pg_restore --list` can read it before migrations. This is a database
+   backup, not a media snapshot or a full restore test.
+4. Recreates and waits for the migration container. Existing records are retained;
+   Test data is never imported into Production by CI.
+5. Starts the backend, waits for health and verifies its exact image reference/ID.
+6. Atomically updates only `BACKEND_IMAGE` in `.env` and records `.deployed-image`
+   and `.last-release-backup`. CI then checks the public API.
+
+A database backup failure restarts the old backend without running migrations.
+After migrations start, failures require inspection of the private release logs;
+there is no automatic database restore or assumption that old code supports the
+new schema. Preserve backward-compatible migrations. Backups accumulate deliberately;
+copy and verify them off-server before applying your retention policy.
+
+The successful exited migrator container is expected. No `down -v`, seed, MinIO
+restore, infrastructure upgrade or Nginx edit occurs during routine code releases.
+
+## Manual recovery
+
+Use the prior digest from `previous-image.txt` only after confirming schema
+compatibility. A code rollback does not undo migrations. For example:
+
+```bash
+sudo /opt/oxus_backend/deployment/deploy.sh production \
+  ghcr.io/zhunus1/oxus_backend@sha256:<verified-previous-digest>
+```
+
+For Test, replace `production` with `test`. The script also makes a fresh Production
+DB backup during a manually invoked release. A complete DB restore remains an
+explicit maintenance operation, never a side effect of a branch push.
+
+## First deployment on a new server
+
+This CI installer expects the infrastructure and backend to exist already. For a new
+server, copy `compose.yaml` and `.env.example`, create `.env` with server-specific
+secrets, provide `jitsi-private-key.pk` readable by UID 1001, and initialize the stack
+with `docker compose --env-file .env -f compose.yaml up -d`. Configure host Nginx/TLS
+and verify application health before installing CI access. Use the separate Test
+`nginx.conf` template only for Test; preserve Production's existing static landing
+and `/storage/` bucket path. Do not overwrite a running server's `.env` or Jitsi key.
+
+Sales / Expert demo seeds are manually invoked only; normal deployment does not seed demo records.
