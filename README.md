@@ -107,7 +107,7 @@ Deployment scripts and release verification live in `deployment/`. Before activa
 
 ## Sales Manager CRM
 
-The backend contract for landing-calculator ingestion, Sales Manager ownership, callbacks, expert calls, notifications, and realtime events is documented in [`docs/sales-manager-crm.md`](docs/sales-manager-crm.md).
+Current integration and operational guides are listed in [docs](docs/README.md), including [expert call email notifications](docs/lead-call-notifications.md).
 
 ### Manual expert contracts
 
@@ -115,6 +115,6 @@ The expert saves a contract draft without creating a student account. Paper sign
 
 Deploy migration `20260928130000_manual_contracts` before the application. Coordinate the frontend rollout: preparation now returns `contract: null` and `draft`. Online OTP/signing routes are temporarily disabled for all contracts. Existing records are preserved and can be completed manually.
 
-See [manual contract API, frontend integration, private scans and deployment](deployment/manual-contracts.md) for request examples, payment rules, legacy handling and tests.
+See [manual contract API, frontend integration, private scans and deployment](docs/manual-contracts.md) for request examples, payment rules, legacy handling and tests.
 
 Student identity uses separate `firstname`, `lastname`, optional `middlename`; parent identity is stored separately. Omitted, null or blank patronymics remain optional. Existing profile APIs keep their fields and identity-lock behavior; no full name is split automatically.
