@@ -141,6 +141,11 @@ enum ContractStatus {
   PAID
 }
 
+enum ContractPaymentType {
+  FULL
+  INSTALLMENT
+}
+
 enum LeadStatus {
   NEW
   CALL_SCHEDULED
@@ -236,6 +241,7 @@ model User {
   leadActivities        LeadActivity[]          @relation("LeadActivityActor")
   studentContracts      Contract[]              @relation("StudentContracts")
   signedContracts       Contract[]              @relation("ContractSignedBy")
+  confirmedInstallments ContractInstallment[]
   journeyEvents         UserJourneyEvent[]
 
   expertTasks  Task[]        @relation("ExpertTasks")
@@ -264,10 +270,12 @@ model UserJourneyEvent {
   eventType String
   eventData Json?
   createdAt DateTime @default(now())
+  occurredAt DateTime?
 
   @@index([userId, createdAt])
   @@index([createdAt])
   @@index([eventType])
+  @@index([occurredAt])
 }
 
 model Role {
@@ -1044,9 +1052,15 @@ model Contract {
   signedByUserId Int?
   signedByUser   User? @relation("ContractSignedBy", fields: [signedByUserId], references: [id])
 
-  subscriptionTier SubscriptionTier
-  price            Float
-  currency         String           @default("KZT")
+  subscriptionTier  SubscriptionTier
+  price             Float
+  currency          String                @default("KZT")
+  paymentType       ContractPaymentType?
+  installmentCount  Int?
+  manualConfirmedAt DateTime?
+  partyDetails      Json?
+  scanFileKey       String?
+  installments      ContractInstallment[]
 
   // Client details filled during student signing
   clientFullName String?
@@ -1119,6 +1133,7 @@ model Lead {
   callbackReason       LeadCallbackReason?
   contractId           String?                 @unique
   contract             Contract?               @relation(fields: [contractId], references: [id])
+  contractDraft        LeadContractDraft?
   convertedAt          DateTime?
   meetingInvitations   LeadMeetingInvitation[]
 
@@ -1152,6 +1167,32 @@ model Lead {
   @@index([originSourceId, createdAt])
   @@index([assignedExpertUserId, status, createdAt])
   @@index([assignedExpertUserId, statusChangedAt, id])
+}
+
+// Validated identity and terms before an account exists. Original submissions stay intact.
+model LeadContractDraft {
+  leadId    Int       @id
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  data      Json
+  signedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model ContractInstallment {
+  id                String    @id @default(uuid())
+  contractId        String
+  contract          Contract  @relation(fields: [contractId], references: [id])
+  number            Int
+  amount            Decimal   @db.Decimal(12, 2)
+  dueDate           DateTime  @db.Date
+  paidAt            DateTime?
+  confirmedAt       DateTime?
+  confirmedByUserId Int?
+  confirmedByUser   User?     @relation(fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([contractId, number])
+  @@index([paidAt, dueDate])
 }
 
 model LeadSubmission {

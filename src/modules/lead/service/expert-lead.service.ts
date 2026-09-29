@@ -1,16 +1,19 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { LeadStatus, Prisma } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
-import { ExpertLeadQueryDto } from "../api/dto/sales/expert-lead-query.dto";
+import { ExpertLeadFiltersDto, ExpertLeadQueryDto } from "../api/dto/sales/expert-lead-query.dto";
 import { ExpertFollowUpDto, ExpertQuestionnaireDto } from "../api/dto/sales/sales-v2.dto";
 import { leadTransaction } from "../domain/lead-transaction";
 import { leadStatusUpdate } from "../domain/lead-status";
+import { assertContractAccess } from "src/modules/contract/domain/contract-access";
 import { salesLeadDetailInclude, salesLeadListInclude } from "../repository/sales-lead.repository";
 import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 
 const tabStatuses: Record<ExpertLeadQueryDto["tab"], LeadStatus[]> = {
   NEW: ["CALL_SCHEDULED", "OFFICE_INVITED"],
   FOLLOW_UP: ["RECALL"],
+  SIGNING: ["CONTRACT_PENDING"],
+  SIGNED: ["CONVERTED"],
   CONTRACTS: ["CONTRACT_PENDING", "CONVERTED"],
   ARCHIVE: ["REJECTED", "NEW"],
 };
@@ -24,11 +27,25 @@ export class ExpertLeadService {
 
   /** Paginates the expert assigned leads by workflow tab without exposing other experts cards. */
   async list(expertId: number, query: ExpertLeadQueryDto) {
+    const where = { ...this.filters(expertId, query), status: { in: tabStatuses[query.tab] } };
+    const [data, total] = await Promise.all([
+      this.prisma.lead.findMany({
+        where,
+        include: salesLeadListInclude,
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+        orderBy: [{ statusChangedAt: "desc" }, { id: "desc" }],
+      }),
+      this.prisma.lead.count({ where }),
+    ]);
+    return { data, meta: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } };
+  }
+
+  private filters(expertId: number, query: ExpertLeadFiltersDto): Prisma.LeadWhereInput {
     const search = query.search?.trim();
-    const where: Prisma.LeadWhereInput = {
+    return {
       assignedExpertUserId: expertId,
       deletedAt: null,
-      status: { in: tabStatuses[query.tab] },
       ...(query.source ? { originSource: { code: query.source } } : {}),
       ...(search
         ? {
@@ -40,22 +57,11 @@ export class ExpertLeadService {
           }
         : {}),
     };
-    const [data, total] = await Promise.all([
-      this.prisma.lead.findMany({
-        where,
-        include: salesLeadListInclude,
-        skip: (query.page - 1) * query.limit,
-        take: query.limit,
-        orderBy: query.tab === "NEW" ? [{ statusChangedAt: "desc" }, { id: "desc" }] : [{ createdAt: "desc" }, { id: "desc" }],
-      }),
-      this.prisma.lead.count({ where }),
-    ]);
-    return { data, meta: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } };
   }
 
   /** Aggregates assigned lead statuses into the Expert tab counters. */
-  async summary(expertId: number) {
-    const groups = await this.prisma.lead.groupBy({ by: ["status"], where: { assignedExpertUserId: expertId, deletedAt: null }, _count: { _all: true } });
+  async summary(expertId: number, query: ExpertLeadFiltersDto = {}) {
+    const groups = await this.prisma.lead.groupBy({ by: ["status"], where: this.filters(expertId, query), _count: { _all: true } });
     return Object.fromEntries(
       Object.entries(tabStatuses).map(([tab, statuses]) => [tab, groups.filter(g => statuses.includes(g.status)).reduce((sum, g) => sum + g._count._all, 0)]),
     );
@@ -67,12 +73,30 @@ export class ExpertLeadService {
       where: { id: leadId, assignedExpertUserId: expertId, deletedAt: null },
       include: {
         ...salesLeadDetailInclude,
+        contractDraft: true,
         expertCalls: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], include: { expertUser: { select: { id: true, firstname: true, lastname: true } } } },
         activities: { orderBy: [{ createdAt: "desc" }, { id: "desc" }] },
-        contract: { select: { id: true, status: true, studentId: true, subscriptionTier: true, price: true, currency: true } },
+        contract: {
+          select: {
+            id: true,
+            status: true,
+            studentId: true,
+            subscriptionTier: true,
+            price: true,
+            currency: true,
+            paymentType: true,
+            installmentCount: true,
+            manualConfirmedAt: true,
+            studentSignedAt: true,
+            scanFileKey: true,
+            partyDetails: true,
+            installments: { orderBy: { number: "asc" } },
+          },
+        },
       },
     });
     if (!lead) throw new NotFoundException("Lead not found");
+    if (lead.contractId) await assertContractAccess(this.prisma, lead.contractId, expertId);
     return lead;
   }
 
@@ -158,7 +182,7 @@ export class ExpertLeadService {
   private async owned(tx: Prisma.TransactionClient, expertId: number, leadId: number) {
     const lead = await tx.lead.findFirst({ where: { id: leadId, assignedExpertUserId: expertId, deletedAt: null } });
     if (!lead) throw new NotFoundException("Lead not found");
-    if (lead.contractId || lead.status === "REJECTED") throw new ConflictException("Lead cannot be edited in its current state");
+    if (lead.contractId || ["CONTRACT_PENDING", "CONVERTED", "REJECTED"].includes(lead.status)) throw new ConflictException("Lead cannot be edited in its current state");
     return lead;
   }
 

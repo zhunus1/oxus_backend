@@ -18,13 +18,34 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/oxus_ci_test
 
 jobs:
   quality:
-    name: Install, lint, test, and build
+    name: Build, unit and PostgreSQL/Redis integration gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SALES_V2_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxus_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oxus_ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
 
     steps:
       - name: Require release PRs to come from test
@@ -63,8 +84,15 @@ jobs:
       - name: Build application
         run: yarn build
 
+      - name: TypeScript
+        run: yarn tsc --noEmit
+
+      - name: Clean migrations, schema diff, security, manual, reporting, demo and Redis integration
+        run: yarn test:integration
+
       - name: Validate deployment shell script
         run: |
+          docker pull node:22-alpine
           bash -n deployment/deploy.sh
           bash -n deployment/ssh-deploy.sh
           bash -n deployment/install-ci.sh

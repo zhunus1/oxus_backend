@@ -53,7 +53,7 @@ describe("LeadNotificationService", () => {
     findMany.mockResolvedValue([{ ...notification, content: "Пора перезвонить: Әлия" }]);
     count.mockResolvedValue(1);
 
-    await expect(service.list(17, { page: 1, limit: 20, includeScheduled: true })).resolves.toEqual({
+    await expect(service.list(17, { page: 1, limit: 20, includeScheduled: true, unreadOnly: false })).resolves.toEqual({
       data: [{ ...notification, params: { leadName: "Әлия" } }],
       meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
     });
@@ -68,7 +68,7 @@ describe("LeadNotificationService", () => {
 
   it("omits content from legacy delivered notifications without parameter snapshots", async () => {
     findMany.mockResolvedValue([{ id: 5, type: "LEAD_FOLLOW_UP", status: "SENT", metadata: null, content: "Лид Әлия передан на дожим" }]);
-    const result = await service.list(17, { page: 1, limit: 20 });
+    const result = await service.list(17, { page: 1, limit: 20, unreadOnly: false });
     expect(result.data).toEqual([{ id: 5, type: "LEAD_FOLLOW_UP", status: "SENT", metadata: null, params: null }]);
   });
 

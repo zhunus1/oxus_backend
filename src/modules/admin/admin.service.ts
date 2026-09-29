@@ -605,6 +605,9 @@ export class AdminService {
     if (role.code === "STUDENT") {
       data.portrait = { create: { consultationBalance: 2 } };
     }
+    if (role.code === "EXPERT") {
+      data.consultantProfile = { create: {} };
+    }
 
     const user = await this.prisma.user.create({
       data,
@@ -661,10 +664,17 @@ export class AdminService {
       data.password = await bcrypt.hash(dto.password, 10);
     }
 
-    const user = await this.prisma.user.update({
-      where: { id },
-      data,
-      select: ADMIN_USER_DETAIL_SELECT,
+    const user = await this.prisma.$transaction(async tx => {
+      const updated = await tx.user.update({
+        where: { id },
+        data,
+        select: ADMIN_USER_DETAIL_SELECT,
+      });
+      if (updated.role.code === "EXPERT") {
+        // Also repair legacy experts on save without reactivating an existing profile.
+        await tx.consultantProfile.upsert({ where: { userId: id }, create: { userId: id }, update: {} });
+      }
+      return updated;
     });
     if (dto.roleId !== undefined) this.leadRealtime.revokeUser(id);
     return user;

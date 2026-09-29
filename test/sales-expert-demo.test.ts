@@ -56,14 +56,14 @@ test("36 CRM fixtures: read-only preview, relations, visibility, preserved progr
   const result = await seedSalesExpertDemo(prisma, { ...options, apply: true }, now);
   assert.equal(result.created, 36);
   assert.equal(await prisma.lead.count(), 36);
-  assert.equal(await prisma.user.count(), 5, "Exactly three isolated demo student accounts");
+  assert.equal(await prisma.user.count(), 3, "Only the paid scenario creates a student account");
   assert.equal(await prisma.leadStudentInvitation.count(), 0, "No activation email recovery jobs");
   assert.equal(await prisma.notificationLog.count({ where: { channel: { not: "IN_APP" } } }), 0, "No outgoing email/SMS records");
 
   const sales = new SalesLeadRepository(prisma);
   assert.deepEqual(await sales.summary(manager.id), { NEW: 9, CALL_SCHEDULED: 6, RECALL: 9, REJECTED: 3, OFFICE_INVITED: 6, CONTRACT_PENDING: 2, CONVERTED: 1 });
   const experts = new ExpertLeadService(prisma, {} as LeadRealtimeGateway);
-  assert.deepEqual(await experts.summary(expert.id), { NEW: 12, FOLLOW_UP: 6, CONTRACTS: 3, ARCHIVE: 3 });
+  assert.deepEqual(await experts.summary(expert.id), { NEW: 12, FOLLOW_UP: 6, SIGNING: 2, SIGNED: 1, CONTRACTS: 3, ARCHIVE: 3 });
   assert.equal((await experts.list(expert.id, { tab: "NEW", page: 1, limit: 20 })).data.length, 12);
   const calls = await prisma.leadExpertCall.findMany({ include: { meeting: true, invitation: true, lead: true }, orderBy: { startTime: "asc" } });
   for (const [i, call] of calls.entries()) {
@@ -79,17 +79,35 @@ test("36 CRM fixtures: read-only preview, relations, visibility, preserved progr
     }
     if (call.completedAt) assert(call.completedAt <= now);
   }
-  const pending = await prisma.contract.findMany({ where: { status: { not: "SIGNED" } }, include: { student: { include: { portrait: true, studentPackages: true } } } });
+  const drafts = await prisma.leadContractDraft.findMany({ include: { lead: true }, orderBy: { createdAt: "asc" } });
+  assert.equal(drafts.length, 3);
+  const pending = drafts.filter(draft => draft.lead.status === "CONTRACT_PENDING");
   assert.equal(pending.length, 2);
-  for (const contract of pending) {
-    assert.equal(contract.student.portrait!.consultantProfileId, null);
-    assert.equal(contract.student.portrait!.subscription, "FREE");
-    assert.equal(contract.student.studentPackages.length, 0);
+  assert.equal(pending.filter(draft => draft.signedAt).length, 1, "Signature alone does not close a lead");
+  for (const draft of pending) {
+    assert.equal(draft.lead.contractId, null);
+    const identity = draft.data as { email: string };
+    assert.equal(await prisma.user.count({ where: { email: identity.email } }), 0, "No account before payment");
   }
-  const signed = await prisma.contract.findFirstOrThrow({ where: { status: "SIGNED" }, include: { lead: true, student: { include: { portrait: true, studentPackages: true } } } });
+  const signed = await prisma.contract.findFirstOrThrow({
+    where: { status: "PAID" },
+    include: { installments: true, lead: true, student: { include: { portrait: true, studentPackages: true, journeyEvents: true } } },
+  });
   assert.equal(signed.lead!.status, "CONVERTED");
+  assert.equal(signed.paymentType, "FULL");
+  assert.equal(signed.price, 1500000);
+  assert.equal(signed.currency, "KZT");
+  assert(signed.manualConfirmedAt && signed.paidAt);
+  assert.equal(signed.installments.length, 1);
+  assert.equal(signed.installments[0].amount.toNumber(), 1500000);
+  assert.equal(+signed.installments[0].paidAt!, +signed.paidAt);
   assert.equal(signed.student.portrait!.subscription, "EXPERT_MENTORSHIP");
   assert.equal(signed.student.studentPackages[0].totalSlots, 10);
+  assert.deepEqual(signed.student.journeyEvents.map(event => event.eventType).sort(), ["CONTRACT_SIGNED", "LEAD_CONVERTED", "PAYMENT_COMPLETED"]);
+  for (const tab of ["SIGNING", "SIGNED", "CONTRACTS"] as const) {
+    assert.equal((await experts.list(expert.id, { tab, page: 1, limit: 20 })).meta.total, (await experts.summary(expert.id))[tab]);
+  }
+  assert.equal((await experts.summary(expert.id)).CONTRACTS, (await experts.summary(expert.id)).SIGNING + (await experts.summary(expert.id)).SIGNED);
 
   // Simulate frontend progress and ensure a later run on the same local day preserves it.
   const first = result.entries.find(entry => entry.code === "S01")!;

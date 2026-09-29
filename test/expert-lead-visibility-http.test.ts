@@ -118,7 +118,8 @@ before(async () => {
   app = module.createNestApplication();
   app.setGlobalPrefix("api/v1");
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidUnknownValues: false }));
-  await app.init();
+  // The suite owns the listener; Supertest must not listen/close for each request.
+  await app.listen(0, "127.0.0.1");
 });
 
 after(async () => {
@@ -203,7 +204,7 @@ for (const [tab, status] of [
   ["CONTRACTS", "CONTRACT_PENDING"],
   ["ARCHIVE", "REJECTED"],
 ] as const)
-  test(`HTTP: ${tab} retains creation-date sorting`, async () => {
+  test(`HTTP: ${tab} uses stage-entry sorting`, async () => {
     const expert = await user("EXPERT");
     const old = new Date("2020-01-01T00:00:00Z");
     const recent = new Date("2021-01-01T00:00:00Z");
@@ -213,6 +214,6 @@ for (const [tab, status] of [
     const result = await http(expert.id, "get", "/expert/leads").query({ tab }).expect(200);
     assert.deepEqual(
       result.body.data.map((lead: { id: number }) => lead.id),
-      [first.id, second.id],
+      [second.id, first.id],
     );
   });

@@ -11,6 +11,7 @@ export class UsersRepository {
   constructor(private prisma: PrismaService) {}
 
   async create(data: CreateUserDto): Promise<User> {
+    const role = await this.prisma.role.findUnique({ where: { id: data.roleId }, select: { code: true } });
     return this.prisma.user.create({
       data: {
         firstname: data.firstname,
@@ -22,6 +23,7 @@ export class UsersRepository {
         countryId: data.countryId,
         roleId: data.roleId,
         citizenshipCountryId: data.citizenshipCountryId,
+        ...(role?.code === "EXPERT" ? { consultantProfile: { create: {} } } : {}),
       },
     });
   }

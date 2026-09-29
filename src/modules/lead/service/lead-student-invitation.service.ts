@@ -9,6 +9,7 @@ import * as bcrypt from "bcrypt";
 import { PrismaService } from "src/database/prisma.service";
 import { MailService } from "src/modules/mail/mail.service";
 import { AcceptStudentInvitationDto } from "../api/dto/sales/sales-v2.dto";
+import { assertContractAccess } from "src/modules/contract/domain/contract-access";
 
 /** Delivers and redeems one-use student activation invitations with versioned queue retries. */
 @Injectable()
@@ -92,9 +93,10 @@ export class LeadStudentInvitationService {
   async resend(expertId: number, leadId: number) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, assignedExpertUserId: expertId, deletedAt: null },
-      select: { contract: { select: { studentId: true } } },
+      select: { contract: { select: { id: true, studentId: true } } },
     });
     if (!lead?.contract) throw new NotFoundException("Lead contract not found");
+    await assertContractAccess(this.prisma, lead.contract.id, expertId, "manage");
     const invitation = await this.prisma.leadStudentInvitation.findUnique({ where: { userId: lead.contract.studentId } });
     if (!invitation || invitation.acceptedAt) throw new ConflictException("Student already has account access");
     if (invitation.sentAt && invitation.sentAt.getTime() > Date.now() - 60_000) throw new ConflictException("Please wait before resending");

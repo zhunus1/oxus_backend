@@ -2,6 +2,8 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { ContractStatus, Prisma } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
 import type { FinanceContractsQueryDto } from "./api/dto/finance-contracts-query.dto";
+import { pageBounds, PageQueryDto } from "src/common/dto/page-query.dto";
+import { expertEarningsTotalsQuery } from "./finance-earnings.query";
 
 export type ContractWithDetailsDto = {
   id: string;
@@ -19,6 +21,8 @@ export type ContractWithDetailsDto = {
     email: string;
   } | null;
   amount: number;
+  paidAmount: number;
+  remainingAmount: number;
   currency: string;
   subscriptionTier: string;
   status: ContractStatus;
@@ -43,6 +47,7 @@ export class FinanceService {
     expertSignedAt: Date | null;
     paidAt: Date | null;
     createdAt: Date;
+    installments?: { amount: Prisma.Decimal; paidAt: Date | null }[];
     student: { id: number; firstname: string; lastname: string; email: string };
     signedByUser: {
       id: number;
@@ -51,7 +56,17 @@ export class FinanceService {
       email: string;
     } | null;
   }): ContractWithDetailsDto {
+    const paidAmount = row.installments?.length
+      ? row.installments
+          .filter(item => item.paidAt)
+          .reduce((sum, item) => sum.add(item.amount), new Prisma.Decimal(0))
+          .toNumber()
+      : row.status === ContractStatus.PAID
+        ? row.price
+        : 0;
     return {
+      paidAmount,
+      remainingAmount: new Prisma.Decimal(row.price).sub(paidAmount).toNumber(),
       id: row.id,
       contractNumber: row.contractNumber,
       student: row.student,
@@ -105,6 +120,7 @@ export class FinanceService {
         take: limit,
         orderBy,
         include: {
+          installments: { select: { amount: true, paidAt: true } },
           student: {
             select: { id: true, firstname: true, lastname: true, email: true },
           },
@@ -127,104 +143,72 @@ export class FinanceService {
   }
 
   async getSummary() {
-    const [signedFinancial, paidFinancial, statusGroups, distinctExperts] = await Promise.all([
-      this.prisma.contract.aggregate({
-        where: {
-          status: { in: [ContractStatus.SIGNED, ContractStatus.PAID] },
-        },
-        _sum: { price: true },
-        _count: { _all: true },
+    // Aggregate receipts per contract before grouping: a paid manual contract must not also
+    // contribute its full price as a second receipt. Currency is part of every money group.
+    const rows = await this.prisma.$queryRaw<
+      {
+        expertId: number | null;
+        currency: string;
+        status: ContractStatus;
+        count: bigint;
+        price: Prisma.Decimal;
+        paid: Prisma.Decimal;
+      }[]
+    >`
+      SELECT c."signedByUserId" AS "expertId", c.currency, c.status, COUNT(*) AS count,
+        SUM(c.price::numeric) AS price,
+        SUM(CASE WHEN i."contractId" IS NOT NULL THEN i.paid
+          WHEN c.status = 'PAID' THEN c.price::numeric ELSE 0 END) AS paid
+      FROM "Contract" c
+      LEFT JOIN (
+        SELECT "contractId", COALESCE(SUM(amount) FILTER (WHERE "paidAt" IS NOT NULL), 0) AS paid
+        FROM "ContractInstallment" GROUP BY "contractId"
+      ) i ON i."contractId" = c.id
+      GROUP BY c."signedByUserId", c.currency, c.status
+    `;
+    const financialRows = rows.map(row => ({
+      ...row,
+      totalSignedAmount: ["SIGNED", "PAID"].includes(row.status) ? row.price : 0,
+      totalPaidAmount: row.paid,
+      signedUnpaidAmount: row.status === ContractStatus.SIGNED ? new Prisma.Decimal(row.price).sub(row.paid) : 0,
+    }));
+    const expertIds = [...new Set(rows.filter(row => row.expertId !== null && ["SIGNED", "PAID"].includes(row.status)).map(row => row.expertId!))];
+    const [experts, expertOptions] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { id: { in: expertIds } },
+        select: { id: true, firstname: true, lastname: true, email: true },
+        orderBy: [{ lastname: "asc" }, { firstname: "asc" }],
       }),
-      this.prisma.contract.aggregate({
-        where: { status: ContractStatus.PAID },
-        _sum: { price: true },
-        _count: { _all: true },
-      }),
-      this.prisma.contract.groupBy({
-        by: ["status"],
-        _count: { _all: true },
-      }),
-      this.prisma.contract.findMany({
-        where: { signedByUserId: { not: null } },
-        select: { signedByUserId: true },
-        distinct: ["signedByUserId"],
+      this.prisma.user.findMany({
+        where: { role: { code: "EXPERT" } },
+        select: { id: true, firstname: true, lastname: true, email: true },
+        orderBy: [{ lastname: "asc" }, { firstname: "asc" }],
       }),
     ]);
-
-    const expertOptions = await this.prisma.user.findMany({
-      where: { role: { code: "EXPERT" } },
-      select: { id: true, firstname: true, lastname: true, email: true },
-      orderBy: [{ lastname: "asc" }, { firstname: "asc" }],
-    });
-
     const countByStatus: Record<string, number> = {};
-    for (const g of statusGroups) {
-      countByStatus[g.status] = g._count._all;
-    }
-
-    const paidByExpert = await this.prisma.contract.groupBy({
-      by: ["signedByUserId"],
-      where: { signedByUserId: { not: null }, status: ContractStatus.PAID },
-      _sum: { price: true },
-      _count: { _all: true },
-    });
-
-    const allSignedByExpert = await this.prisma.contract.groupBy({
-      by: ["signedByUserId"],
-      where: {
-        signedByUserId: { not: null },
-        status: { in: [ContractStatus.SIGNED, ContractStatus.PAID] },
-      },
-      _sum: { price: true },
-      _count: { _all: true },
-    });
-
-    const paidMap = new Map(paidByExpert.map(x => [x.signedByUserId as number, { sum: x._sum.price ?? 0, count: x._count._all }]));
-
-    const allSignedMap = new Map(allSignedByExpert.map(x => [x.signedByUserId as number, { sum: x._sum.price ?? 0, count: x._count._all }]));
-
-    const expertIds = new Set<number>();
-    for (const x of allSignedByExpert) {
-      if (x.signedByUserId != null) expertIds.add(x.signedByUserId);
-    }
-
-    const experts = await this.prisma.user.findMany({
-      where: { id: { in: [...expertIds] } },
-      select: { id: true, firstname: true, lastname: true, email: true },
-      orderBy: [{ lastname: "asc" }, { firstname: "asc" }],
-    });
-
-    const earningsByExpert = experts.map(u => {
-      const signedTotal = allSignedMap.get(u.id)?.sum ?? 0;
-      const paidTotal = paidMap.get(u.id)?.sum ?? 0;
-      const contractCount = allSignedMap.get(u.id)?.count ?? 0;
-      const paidCount = paidMap.get(u.id)?.count ?? 0;
-      return {
-        id: u.id,
-        firstname: u.firstname,
-        lastname: u.lastname,
-        email: u.email,
-        totalSignedAmount: signedTotal,
-        totalPaidAmount: paidTotal,
-        contractCount,
-        paidContractCount: paidCount,
-      };
-    });
-
+    for (const row of rows) countByStatus[row.status] = (countByStatus[row.status] ?? 0) + Number(row.count);
     return {
-      totalSignedAmount: signedFinancial._sum.price ?? 0,
-      totalSignedContracts: signedFinancial._count._all,
-      totalPaidAmount: paidFinancial._sum.price ?? 0,
-      paidContractsCount: paidFinancial._count._all,
-      totalContracts: await this.prisma.contract.count(),
-      expertsWithContracts: distinctExperts.length,
+      ...moneySummary(financialRows),
+      totalSignedContracts: (countByStatus.SIGNED ?? 0) + (countByStatus.PAID ?? 0),
+      paidContractsCount: countByStatus.PAID ?? 0,
+      totalContracts: rows.reduce((sum, row) => sum + Number(row.count), 0),
+      expertsWithContracts: new Set(rows.filter(row => row.expertId !== null).map(row => row.expertId)).size,
       countByStatus,
       expertOptions,
-      earningsByExpert,
+      earningsByExpert: experts.map(expert => {
+        const own = financialRows.filter(row => row.expertId === expert.id);
+        return {
+          ...expert,
+          ...moneySummary(own),
+          contractCount: own.filter(row => ["SIGNED", "PAID"].includes(row.status)).reduce((sum, row) => sum + Number(row.count), 0),
+          paidContractCount: own.filter(row => row.status === "PAID").reduce((sum, row) => sum + Number(row.count), 0),
+        };
+      }),
     };
   }
 
-  async getExpertEarnings(expertId: number) {
+  async getExpertEarnings(expertId: number, query: Partial<PageQueryDto> = {}) {
+    const { page, limit, skip } = pageBounds(query);
     const expert = await this.prisma.user.findFirst({
       where: { id: expertId, role: { code: "EXPERT" } },
       select: { id: true, firstname: true, lastname: true, email: true },
@@ -233,31 +217,74 @@ export class FinanceService {
       throw new NotFoundException(`Expert with id ${expertId} not found`);
     }
 
-    const contracts = await this.prisma.contract.findMany({
-      where: { signedByUserId: expertId },
-      orderBy: { createdAt: "desc" },
-      include: {
-        student: {
-          select: { id: true, firstname: true, lastname: true, email: true },
+    const [contracts, groups] = await this.prisma.$transaction([
+      this.prisma.contract.findMany({
+        where: { signedByUserId: expertId },
+        skip,
+        take: limit,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        include: {
+          installments: { select: { amount: true, paidAt: true } },
+          student: {
+            select: { id: true, firstname: true, lastname: true, email: true },
+          },
+          signedByUser: {
+            select: { id: true, firstname: true, lastname: true, email: true },
+          },
         },
-        signedByUser: {
-          select: { id: true, firstname: true, lastname: true, email: true },
-        },
-      },
-    });
+      }),
+      this.prisma.$queryRaw<{ currency: string; count: bigint; totalSignedAmount: Prisma.Decimal; totalPaidAmount: Prisma.Decimal; signedUnpaidAmount: Prisma.Decimal }[]>(
+        expertEarningsTotalsQuery(expertId),
+      ),
+    ]);
 
     const mapped = contracts.map(r => this.mapContract(r));
-    const paidTotal = mapped.filter(c => c.status === ContractStatus.PAID).reduce((s, c) => s + c.amount, 0);
-    const signedUnpaidTotal = mapped.filter(c => c.status === ContractStatus.SIGNED).reduce((s, c) => s + c.amount, 0);
-
+    const amounts = moneySummary(groups);
+    const total = groups.reduce((sum, group) => sum + Number(group.count), 0);
     return {
       expert,
       totals: {
-        allContracts: mapped.length,
-        paidAmount: paidTotal,
-        signedUnpaidAmount: signedUnpaidTotal,
+        allContracts: total,
+        currency: amounts.currency,
+        paidAmount: amounts.totalPaidAmount,
+        signedUnpaidAmount: amounts.signedUnpaidAmount,
+        byCurrency: amounts.byCurrency.map(row => ({ currency: row.currency, paidAmount: row.totalPaidAmount, signedUnpaidAmount: row.signedUnpaidAmount })),
       },
       contracts: mapped,
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     };
   }
+}
+
+/** Retain numeric legacy totals only when one currency makes them meaningful. */
+function moneySummary(
+  rows: { currency: string; totalSignedAmount: Prisma.Decimal | number; totalPaidAmount: Prisma.Decimal | number; signedUnpaidAmount: Prisma.Decimal | number }[],
+) {
+  const groups = new Map<string, { totalSignedAmount: Prisma.Decimal; totalPaidAmount: Prisma.Decimal; signedUnpaidAmount: Prisma.Decimal }>();
+  for (const row of rows) {
+    const previous = groups.get(row.currency);
+    groups.set(row.currency, {
+      totalSignedAmount: new Prisma.Decimal(previous?.totalSignedAmount ?? 0).add(row.totalSignedAmount),
+      totalPaidAmount: new Prisma.Decimal(previous?.totalPaidAmount ?? 0).add(row.totalPaidAmount),
+      signedUnpaidAmount: new Prisma.Decimal(previous?.signedUnpaidAmount ?? 0).add(row.signedUnpaidAmount),
+    });
+  }
+  const byCurrency = [...groups]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, row]) => ({
+      currency,
+      totalSignedAmount: row.totalSignedAmount.toNumber(),
+      totalPaidAmount: row.totalPaidAmount.toNumber(),
+      signedUnpaidAmount: row.signedUnpaidAmount.toNumber(),
+    }));
+  return {
+    currency: byCurrency.length === 1 ? byCurrency[0].currency : null,
+    totalSignedAmount: byCurrency.length > 1 ? null : (byCurrency[0]?.totalSignedAmount ?? 0),
+    totalPaidAmount: byCurrency.length > 1 ? null : (byCurrency[0]?.totalPaidAmount ?? 0),
+    signedUnpaidAmount: byCurrency.length > 1 ? null : (byCurrency[0]?.signedUnpaidAmount ?? 0),
+    byCurrency,
+  };
 }

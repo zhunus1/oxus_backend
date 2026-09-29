@@ -32,7 +32,9 @@ export class ContractService {
 
   async getMyContract(userId: number) {
     try {
-      return await this.repo.findByStudentId(userId);
+      const contract = await this.repo.findByStudentId(userId);
+      await this.repo.assertStudentRead(userId, contract?.id);
+      return contract;
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error(messages.DATABASE_FETCH_ERROR(this.entity), err, err?.stack);
@@ -68,7 +70,7 @@ export class ContractService {
   /** Verifies the student signing code and applies CRM conversion through the transactional repository. */
   async signByStudent(contractId: string, userId: number, dto: SignStudentContractDto) {
     try {
-      const contract = await this.repo.findById(contractId);
+      const contract = await this.repo.findStudentSigningCredentials(contractId);
       if (!contract) throw new NotFoundException(messages.NOT_FOUND(this.entity));
       if (contract.studentId !== userId) throw new ForbiddenException("Access denied");
       if (contract.status !== ContractStatus.PENDING_STUDENT) {
@@ -128,12 +130,9 @@ export class ContractService {
 
   // ─── Expert / Admin ───────────────────────────────────────────────────────
 
-  async createContractForStudent(dto: CreateContractForStudentDto) {
+  async createContractForStudent(dto: CreateContractForStudentDto, actorId: number) {
     try {
-      const existing = await this.repo.findByStudentId(dto.studentId);
-      if (existing) throw new BadRequestException("Student already has a contract");
-
-      return await this.repo.create(dto);
+      return await this.repo.create(dto, actorId);
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error(messages.DATABASE_CREATE_ERROR(this.entity), err, err?.stack);
@@ -141,12 +140,12 @@ export class ContractService {
     }
   }
 
-  /** Returns the student contract after checking assigned-expert access for CRM leads. */
-  async getContractByStudentId(studentId: number, expertId?: number) {
+  /** Returns the student contract after checking current operational ownership. */
+  async getContractByStudentId(studentId: number, expertId: number) {
     try {
       const contract = await this.repo.findByStudentId(studentId);
       if (!contract) throw new NotFoundException(messages.NOT_FOUND(this.entity));
-      if (expertId) await this.repo.assertLeadExpert(contract.id, expertId);
+      await this.repo.assertLeadExpert(contract.id, expertId);
       return contract;
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -156,9 +155,9 @@ export class ContractService {
   }
 
   /** Lists contracts with optional status and expert visibility filters. */
-  async getAllContracts(status?: ContractStatus, expertId?: number) {
+  async getAllContracts(status: ContractStatus | undefined, expertId: number, query = {}) {
     try {
-      return await this.repo.findAllByStatus(status, expertId);
+      return await this.repo.findAllByStatus(status, expertId, query);
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error(messages.DATABASE_FETCH_ERROR(this.entity), err, err?.stack);
@@ -216,7 +215,7 @@ export class ContractService {
   }
 
   /** Checks expert access and validates contract term changes before persistence. */
-  async updateMeta(contractId: string, dto: UpdateContractMetaDto, userId?: number) {
+  async updateMeta(contractId: string, dto: UpdateContractMetaDto, userId: number) {
     try {
       await this.repo.assertLeadExpert(contractId, userId);
       const contract = await this.repo.findById(contractId);
@@ -224,14 +223,19 @@ export class ContractService {
       if (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.PAID) {
         throw new BadRequestException("Cannot update a fully signed contract");
       }
-      if ((await this.repo.findLead(contractId)) && contract.status !== ContractStatus.PENDING_EXPERT) throw new BadRequestException("A signed lead contract cannot be changed");
-      return await this.repo.updateMeta(contractId, {
-        contractNumber: dto.contractNumber,
-        price: dto.price,
-        currency: dto.currency,
-        serviceStartDate: dto.serviceStartDate ? new Date(dto.serviceStartDate) : undefined,
-        serviceEndDate: dto.serviceEndDate ? new Date(dto.serviceEndDate) : undefined,
-      });
+      return await this.repo.updateMeta(
+        contractId,
+        {
+          contractNumber: dto.contractNumber,
+          price: dto.price,
+          currency: dto.currency,
+          paymentType: dto.paymentType,
+          installmentCount: dto.installmentCount,
+          serviceStartDate: dto.serviceStartDate ? new Date(dto.serviceStartDate) : undefined,
+          serviceEndDate: dto.serviceEndDate ? new Date(dto.serviceEndDate) : undefined,
+        },
+        userId,
+      );
     } catch (err) {
       if (err instanceof HttpException) throw err;
       this.logger.error(messages.DATABASE_UPDATE_ERROR_ENTITY(this.entity), err, err?.stack);
@@ -253,5 +257,9 @@ export class ContractService {
 
   async isFullySigned(studentId: number): Promise<boolean> {
     return this.repo.isFullySigned(studentId);
+  }
+
+  async usesManualPayments(studentId: number): Promise<boolean> {
+    return this.repo.usesManualPayments(studentId);
   }
 }

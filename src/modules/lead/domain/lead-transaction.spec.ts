@@ -6,6 +6,13 @@ jest.mock("generated/prisma/client", () => ({ Prisma: { TransactionIsolationLeve
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 
 describe("leadTransaction", () => {
+  it.each(["40001", "40P01"])("retries PostgreSQL raw-query conflict %s from the driver adapter", async originalCode => {
+    const error = { code: "P2010", meta: { driverAdapterError: { cause: { originalCode } } } };
+    const $transaction = jest.fn().mockRejectedValueOnce(error).mockResolvedValue("committed");
+    await expect(leadTransaction({ $transaction } as unknown as PrismaService, jest.fn())).resolves.toBe("committed");
+    expect($transaction).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["P2034", "P2002"])("retries a rolled-back %s conflict and returns the committed result", async code => {
     const tx = {};
     const operation = jest.fn().mockRejectedValueOnce({ code }).mockResolvedValue("committed");
@@ -21,12 +28,14 @@ describe("leadTransaction", () => {
     expect($transaction).toHaveBeenCalledTimes(3);
   });
 
-  it.each([new Error("Connection failed"), new ConflictException("Contract already exists"), null])(
-    "preserves non-retryable errors without rerunning the operation",
-    async error => {
-      const $transaction = jest.fn().mockRejectedValue(error);
-      await expect(leadTransaction({ $transaction } as unknown as PrismaService, jest.fn())).rejects.toBe(error);
-      expect($transaction).toHaveBeenCalledTimes(1);
-    },
-  );
+  it.each([
+    new Error("Connection failed"),
+    new ConflictException("Contract already exists"),
+    { code: "P2010", meta: { driverAdapterError: { cause: { originalCode: "23503" } } } },
+    null,
+  ])("preserves non-retryable errors without rerunning the operation", async error => {
+    const $transaction = jest.fn().mockRejectedValue(error);
+    await expect(leadTransaction({ $transaction } as unknown as PrismaService, jest.fn())).rejects.toBe(error);
+    expect($transaction).toHaveBeenCalledTimes(1);
+  });
 });

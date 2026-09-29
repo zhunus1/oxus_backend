@@ -1,9 +1,10 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsDateString, IsIn, IsNumber, IsOptional, IsPositive, IsString, Matches } from "class-validator";
 import messages from "src/configs/messages";
+import { ContractPaymentTermsDto } from "./manual-contract.dto";
 
 /** Accepts both legacy and server-generated CRM contract numbers when editing unsigned terms. */
-export class UpdateContractMetaDto {
+export class UpdateContractMetaDto extends ContractPaymentTermsDto {
   @ApiPropertyOptional({ example: "OXUS-2026-0001" })
   @IsOptional()
   @IsString()
