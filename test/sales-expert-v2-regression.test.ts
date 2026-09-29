@@ -68,7 +68,7 @@ function identity() {
     email: `${runId}-${id}@example.test`,
     phone: `+77${id}`,
     subscriptionTier: "EXPERT_MENTORSHIP" as const,
-    price: 100000,
+    price: 1500000,
     currency: "KZT",
   };
 }
@@ -86,12 +86,27 @@ async function readyLead(questionnaire: Prisma.InputJsonObject = {}) {
   });
 }
 
+const confirmation = { signedAt: "2026-01-30T10:00:00Z", paidAt: "2026-01-31T10:00:00Z", amount: 1500000 };
+async function finalizeStudent(leadId: number, dto: ReturnType<typeof identity> & { middlename?: string | null; existingStudentId?: number }) {
+  await contracts.prepare(expertId, leadId, dto);
+  return contracts.confirm(expertId, leadId, { ...confirmation, existingStudentId: dto.existingStudentId });
+}
+async function legacyPendingStudent() {
+  const lead = await readyLead();
+  const user = await createUser("STUDENT");
+  const portrait = await prisma.studentPortrait.create({ data: { userId: user.id } });
+  const contract = await prisma.contract.create({
+    data: { studentId: user.id, contractNumber: randomUUID(), status: "PENDING_EXPERT", subscriptionTier: "EXPERT_MENTORSHIP", price: 1500000, currency: "KZT" },
+  });
+  await prisma.lead.update({ where: { id: lead.id }, data: { contractId: contract.id, status: "CONTRACT_PENDING" } });
+  return { lead, portrait, result: { contract } };
+}
 async function prepareStudent(questionnaire: Prisma.InputJsonObject = {}) {
   const lead = await readyLead(questionnaire);
-  const result = await contracts.prepare(expertId, lead.id, identity());
+  const result = await finalizeStudent(lead.id, identity());
   const portrait = await prisma.studentPortrait.findUniqueOrThrow({ where: { userId: result.contract.studentId } });
-  assert.equal(result.lead.status, "CONTRACT_PENDING");
-  assert.equal(portrait.consultantProfileId, null, "Final assignment must wait for signature");
+  assert.equal(result.lead.status, "CONVERTED");
+  assert.notEqual(portrait.consultantProfileId, null, "Manual signature and payment assign the expert");
   return { lead, result, portrait };
 }
 
@@ -128,6 +143,12 @@ async function within<T>(promise: Promise<T>, label: string): Promise<T> {
 before(async () => {
   await prisma.$connect();
   for (const code of ["STUDENT", "EXPERT", "SALES_MANAGER"]) await prisma.role.upsert({ where: { code }, create: { code, name: code }, update: {} });
+  const contractPermission = await prisma.permission.upsert({
+    where: { code: "EXPERT_LEAD_CALLS_RESPOND" },
+    create: { code: "EXPERT_LEAD_CALLS_RESPOND", name: "Expert contract management" },
+    update: {},
+  });
+  await prisma.role.update({ where: { code: "EXPERT" }, data: { permissions: { connect: { id: contractPermission.id } } } });
   managerId = (await createUser("SALES_MANAGER")).id;
   expertId = (await createUser("EXPERT")).id;
   await prisma.consultantProfile.create({ data: { userId: expertId, isActive: true } });
@@ -159,6 +180,7 @@ async function applicationSchedulers() {
 
 test("P1: application scheduler registers invitation and reminder recovery on Nest startup", async () => {
   const queue = newQueue();
+  await queue.waitUntilReady();
   const module = await Test.createTestingModule({
     imports: await applicationSchedulers(),
     providers: [
@@ -184,6 +206,7 @@ test("P1: application scheduler registers invitation and reminder recovery on Ne
 
 test("control: the Nest harness discovers the real recovery decorator when scheduling is enabled", async () => {
   const queue = newQueue();
+  await queue.waitUntilReady();
   const module = await Test.createTestingModule({
     imports: [ScheduleModule.forRoot()],
     providers: [{ provide: LeadStudentInvitationService, useFactory: () => invitationService(queue) }],
@@ -221,7 +244,7 @@ test("P1: recovery requeues a persisted invitation after enqueue failure", async
 });
 
 test("P1: an unsigned CRM student is excluded from both available list and count", async () => {
-  const { portrait, result } = await prepareStudent();
+  const { portrait, result } = await legacyPendingStudent();
   const student = await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } });
   const where = dashboard.portraitWhereAvailable({ search: student.email });
   const [rows, count] = await Promise.all([dashboard.findExpertStudentPortraits(where, 0, 20), dashboard.countExpertStudentPortraits(where)]);
@@ -229,7 +252,7 @@ test("P1: an unsigned CRM student is excluded from both available list and count
 });
 
 test("P1: direct assignment cannot claim an unsigned CRM student for another expert", async () => {
-  const { portrait } = await prepareStudent();
+  const { portrait } = await legacyPendingStudent();
   const changed = await dashboard.assignPortraitToExpert(portrait.id, otherProfileId);
   const persisted = await prisma.studentPortrait.findUniqueOrThrow({ where: { id: portrait.id } });
   assert.deepEqual({ changed, owner: persisted.consultantProfileId }, { changed: 0, owner: null });
@@ -246,7 +269,7 @@ test("control: an ordinary unassigned student remains available and can be claim
 });
 
 test("P1: the CRM student remains reserved after the expert signs", async () => {
-  const { result, portrait } = await prepareStudent();
+  const { result, portrait } = await legacyPendingStudent();
   const repository = Object.assign(new ContractRepository(), { prisma });
   await repository.expertSign(result.contract.id, expertId);
   assert.equal(await dashboard.assignPortraitToExpert(portrait.id, otherProfileId), 0);
@@ -254,12 +277,12 @@ test("P1: the CRM student remains reserved after the expert signs", async () => 
   assert.equal(await dashboard.countExpertStudentPortraits(dashboard.portraitWhereAvailable({ search: student.email })), 0);
 });
 
-test("P1: concurrent contract preparation and claiming an existing student cannot both succeed", async () => {
+test("P1: concurrent contract confirmation and claiming an existing student cannot both succeed", async () => {
   const user = await createUser("STUDENT");
   const portrait = await prisma.studentPortrait.create({ data: { userId: user.id } });
   const lead = await readyLead();
   const [prepared, claimed] = await Promise.allSettled([
-    contracts.prepare(expertId, lead.id, { ...identity(), email: user.email, phone: user.phoneNumber!, existingStudentId: user.id }),
+    finalizeStudent(lead.id, { ...identity(), email: user.email, phone: user.phoneNumber!, existingStudentId: user.id }),
     dashboard.assignPortraitToExpert(portrait.id, otherProfileId),
   ]);
   assert(prepared.status === "fulfilled" || claimed.status === "fulfilled");
@@ -278,7 +301,7 @@ test("P2: a new student's citizenship reaches the canonical User field", async (
 test("middlename: contract preparation persists three name fields and retries preserve them", async () => {
   const lead = await readyLead();
   const dto = { ...identity(), firstname: "Алия", lastname: "Омарова", middlename: "  Серік қызы  " };
-  const result = await contracts.prepare(expertId, lead.id, dto);
+  const result = await finalizeStudent(lead.id, dto);
   const user = await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } });
   assert.equal(user.firstname, "Алия");
   assert.equal(user.lastname, "Омарова");
@@ -287,7 +310,7 @@ test("middlename: contract preparation persists three name fields and retries pr
   const repo = Object.assign(new ContractRepository(), { prisma });
   const contract = (await repo.findByStudentId(user.id)) as unknown as { student: { middlename: string | null } };
   assert.equal(contract.student.middlename, user.middlename);
-  const listed = (await repo.findAllByStatus("PENDING_EXPERT", expertId)) as unknown as { id: string; student: { middlename: string | null } }[];
+  const listed = (await repo.findAllByStatus("PAID", expertId)).data as unknown as { id: string; student: { middlename: string | null } }[];
   assert.equal(listed.find(item => item.id === result.contract.id)?.student.middlename, user.middlename);
 
   const users = new UsersRepository(prisma);
@@ -296,14 +319,14 @@ test("middlename: contract preparation persists three name fields and retries pr
   assert(!("password" in profile));
 
   const retry = await contracts.prepare(expertId, lead.id, { ...dto, middlename: "Другое" });
-  assert.equal(retry.contract.id, result.contract.id);
+  assert.equal(retry.contract!.id, result.contract.id);
   assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).middlename, user.middlename);
 });
 
 for (const middlename of [undefined, null, "", "   "]) {
   test(`middlename: new account accepts ${JSON.stringify(middlename)} without inventing a name`, async () => {
     const lead = await readyLead();
-    const result = await contracts.prepare(expertId, lead.id, { ...identity(), middlename });
+    const result = await finalizeStudent(lead.id, { ...identity(), middlename });
     assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: result.contract.studentId } })).middlename, null);
   });
 }
@@ -316,10 +339,10 @@ for (const isIdentityLocked of [false, true]) {
       await prisma.studentPortrait.create({ data: { userId: user.id, isIdentityLocked } });
       const lead = await readyLead();
       const dto = { ...identity(), email: user.email, phone: user.phoneNumber!, middlename: "Новое" };
-      await assert.rejects(contracts.prepare(expertId, lead.id, dto), /Confirm reuse/);
+      await assert.rejects(finalizeStudent(lead.id, dto), /Confirm reuse/);
       assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).middlename, previous);
 
-      await contracts.prepare(expertId, lead.id, { ...dto, existingStudentId: user.id });
+      await finalizeStudent(lead.id, { ...dto, existingStudentId: user.id });
       const saved = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
       assert.equal(saved.middlename, isIdentityLocked || previous ? previous : "Новое");
       assert.equal(saved.firstname, user.firstname);
@@ -358,7 +381,7 @@ async function reuseStudent(portraitData: Pick<Prisma.StudentPortraitUncheckedCr
   await prisma.studentPortrait.create({ data: { userId: user.id, ...portraitData } });
   const questionnaire = { birthDate: "2008-04-17", citizenshipCountryId: countryId, languages: ["English"] };
   const lead = await readyLead(questionnaire);
-  const result = await contracts.prepare(expertId, lead.id, { ...identity(), email: user.email, phone: user.phoneNumber!, existingStudentId: user.id });
+  const result = await finalizeStudent(lead.id, { ...identity(), email: user.email, phone: user.phoneNumber!, existingStudentId: user.id });
   assert.equal(result.invitationRequired, false);
   return { user, lead, questionnaire, portrait: await prisma.studentPortrait.findUniqueOrThrow({ where: { userId: user.id } }) };
 }

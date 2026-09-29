@@ -1,3 +1,7 @@
+import { ContractScanService } from "./service/contract-scan.service";
+import { ContractScanController } from "./api/contract-scan.controller";
+import { ManualContractService } from "./service/manual-contract.service";
+import { ManualContractController } from "./api/manual-contract.controller";
 import { BullModule } from "@nestjs/bullmq";
 import { CONTRACT_NOTIFICATION_QUEUE, ContractNotificationService, ContractNotificationProcessor } from "./service/contract-notification.service";
 import { LeadRealtimeModule } from "../lead/realtime/lead-realtime.module";
@@ -28,8 +32,8 @@ import { UserJourneyModule } from "src/modules/user-journey/user-journey.module"
     StudentPortraitModule,
     UserJourneyModule,
   ],
-  providers: [ContractNotificationService, ContractNotificationProcessor, ContractRepository, ContractService, OtpService, PdfService],
-  controllers: [ContractController, ExpertContractController],
+  providers: [ContractScanService, ManualContractService, ContractNotificationService, ContractNotificationProcessor, ContractRepository, ContractService, OtpService, PdfService],
+  controllers: [ContractScanController, ManualContractController, ContractController, ExpertContractController],
   exports: [ContractService],
 })
 export class ContractModule {}

@@ -1,13 +1,19 @@
+import { contractInternalOmit, SafeContract } from "../domain/contract-read";
+import { commercialTerms } from "../domain/manual-contract";
+import { pageBounds, PageQueryDto } from "src/common/dto/page-query.dto";
 import { recordContractEmails } from "../domain/contract-emails";
 import { leadTransaction } from "src/modules/lead/domain/lead-transaction";
 import { leadStatusUpdate } from "src/modules/lead/domain/lead-status";
 import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
-import { BadRequestException, ConflictException, ForbiddenException, Injectable } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
-import { Contract, ContractStatus } from "generated/prisma/client";
+import { ContractStatus } from "generated/prisma/client";
 import { CreateContractForStudentDto } from "../api/dto/create-contract-for-student.dto";
+import { assertContractAccess, assertStudentContractCreation, assertStudentContractRead, contractAccessWhere, contractActor } from "../domain/contract-access";
+import { lockStudentWithoutContract, nextContractNumber } from "../domain/contract-creation";
 
 export const CONTRACT_INCLUDE = {
+  installments: { orderBy: { number: "asc" as const } },
   student: { select: { id: true, firstname: true, lastname: true, middlename: true, email: true, phoneNumber: true } },
   signedByUser: { select: { id: true, firstname: true, lastname: true, email: true } },
 } as const;
@@ -15,59 +21,83 @@ export const CONTRACT_INCLUDE = {
 /** Persists contracts and atomically applies CRM conversion when the student signs. */
 @Injectable()
 export class ContractRepository extends BaseRepository {
-  private async generateContractNumber(): Promise<string> {
-    const year = new Date().getFullYear();
-    const count = await this.prisma.contract.count();
-    const seq = String(count + 1).padStart(4, "0");
-    return `OXUS-${year}-${seq}`;
+  async assertStudentRead(studentId: number, contractId?: string) {
+    await assertStudentContractRead(this.prisma, studentId, contractId);
   }
 
-  async findByStudentId(studentId: number): Promise<Contract | null> {
+  async findByStudentId(studentId: number): Promise<SafeContract | null> {
     return this.prisma.contract.findFirst({
       where: { studentId },
       orderBy: { createdAt: "desc" },
+      omit: contractInternalOmit,
       include: CONTRACT_INCLUDE,
     });
   }
 
-  async findById(id: string): Promise<Contract | null> {
+  async findById(id: string): Promise<SafeContract | null> {
     return this.prisma.contract.findUnique({
       where: { id },
+      omit: contractInternalOmit,
       include: CONTRACT_INCLUDE,
     });
   }
 
-  async findPendingStudent(): Promise<Contract[]> {
+  /** Internal legacy OTP verification only; never return this projection to API consumers. */
+  findStudentSigningCredentials(id: string) {
+    return this.prisma.contract.findUnique({
+      where: { id },
+      select: { id: true, studentId: true, status: true, studentOtpHash: true, studentOtpExpiry: true },
+    });
+  }
+
+  async findPendingStudent(): Promise<SafeContract[]> {
     return this.prisma.contract.findMany({
       where: { status: ContractStatus.PENDING_STUDENT },
+      omit: contractInternalOmit,
       include: { student: CONTRACT_INCLUDE.student },
       orderBy: { expertSignedAt: "asc" },
     });
   }
 
-  /** Filters CRM contracts by assigned expert while retaining the legacy contract listing policy. */
-  async findAllByStatus(status?: ContractStatus, expertId?: number): Promise<Contract[]> {
-    return this.prisma.contract.findMany({
-      where: { ...(status ? { status } : {}), ...(expertId ? { OR: [{ lead: null }, { lead: { assignedExpertUserId: expertId } }] } : {}) },
-      include: { student: { select: { id: true, firstname: true, lastname: true, middlename: true, email: true } } },
-      orderBy: { createdAt: "desc" },
-    });
+  /** Filters both CRM and legacy contracts by current operational ownership. */
+  async findAllByStatus(status: ContractStatus | undefined, actorId: number, query: Partial<PageQueryDto> = {}) {
+    const { page, limit, skip } = pageBounds(query);
+    const actor = await contractActor(this.prisma, actorId);
+    const where = { ...(status ? { status } : {}), ...contractAccessWhere(actor) };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.contract.findMany({
+        where,
+        skip,
+        take: limit,
+        omit: contractInternalOmit,
+        include: { student: { select: { id: true, firstname: true, lastname: true, middlename: true, email: true } } },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      }),
+      this.prisma.contract.count({ where }),
+    ]);
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
-  async create(dto: CreateContractForStudentDto): Promise<Contract> {
-    const contractNumber = dto.contractNumber ?? (await this.generateContractNumber());
-    return this.prisma.contract.create({
-      data: {
-        contractNumber,
-        studentId: dto.studentId,
-        subscriptionTier: dto.subscriptionTier,
-        price: dto.price,
-        currency: dto.currency,
-        status: ContractStatus.PENDING_EXPERT,
-        ...(dto.serviceStartDate && { serviceStartDate: new Date(dto.serviceStartDate) }),
-        ...(dto.serviceEndDate && { serviceEndDate: new Date(dto.serviceEndDate) }),
-      },
-      include: CONTRACT_INCLUDE,
+  async create(dto: CreateContractForStudentDto, actorId: number): Promise<SafeContract> {
+    return leadTransaction(this.prisma, async tx => {
+      await assertStudentContractCreation(tx, dto.studentId, actorId);
+      await lockStudentWithoutContract(tx, dto.studentId);
+      const contractNumber = dto.contractNumber ?? (await nextContractNumber(tx));
+      return tx.contract.create({
+        data: {
+          contractNumber,
+          studentId: dto.studentId,
+          ...commercialTerms(dto.price, dto.currency, dto.subscriptionTier, dto.paymentType, dto.installmentCount),
+          subscriptionTier: dto.subscriptionTier,
+          price: dto.price,
+          currency: dto.currency,
+          status: ContractStatus.PENDING_EXPERT,
+          ...(dto.serviceStartDate && { serviceStartDate: new Date(dto.serviceStartDate) }),
+          ...(dto.serviceEndDate && { serviceEndDate: new Date(dto.serviceEndDate) }),
+        },
+        omit: contractInternalOmit,
+        include: CONTRACT_INCLUDE,
+      });
     });
   }
 
@@ -86,15 +116,15 @@ export class ContractRepository extends BaseRepository {
   }
 
   /** Atomically records the expert signature and durable student notification after checking ownership. */
-  async expertSign(id: string, expertUserId: number): Promise<Contract> {
+  async expertSign(id: string, expertUserId: number): Promise<SafeContract> {
     return leadTransaction(this.prisma, async tx => {
-      const lead = await tx.lead.findUnique({ where: { contractId: id } });
-      if (lead && lead.assignedExpertUserId !== expertUserId) throw new ForbiddenException("Only the assigned expert may manage this lead contract");
+      await assertContractAccess(tx, id, expertUserId, "manage");
       const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
       if (contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("Contract has already changed");
       const signed = await tx.contract.update({
         where: { id },
         data: { signedByUserId: expertUserId, status: ContractStatus.PENDING_STUDENT, expertSignedAt: new Date(), expertOtpHash: null, expertOtpExpiry: null },
+        omit: contractInternalOmit,
         include: CONTRACT_INCLUDE,
       });
       await recordContractEmails(tx, signed, "CONTRACT_READY");
@@ -113,7 +143,7 @@ export class ContractRepository extends BaseRepository {
       clientPhone: string;
     },
     expectedOtpHash?: string,
-  ): Promise<Contract> {
+  ): Promise<SafeContract> {
     return leadTransaction(this.prisma, async tx => {
       const lead = await tx.lead.findUnique({ where: { contractId: id } });
       const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
@@ -124,6 +154,7 @@ export class ContractRepository extends BaseRepository {
         const signed = await tx.contract.update({
           where: { id },
           data: { ...data, status: ContractStatus.SIGNED, studentSignedAt: new Date(), studentOtpHash: null, studentOtpExpiry: null },
+          omit: contractInternalOmit,
           include: CONTRACT_INCLUDE,
         });
         await recordContractEmails(tx, signed, "CONTRACT_SIGNED_COPY");
@@ -137,6 +168,7 @@ export class ContractRepository extends BaseRepository {
       const signed = await tx.contract.update({
         where: { id },
         data: { ...data, status: ContractStatus.SIGNED, studentSignedAt: new Date(), studentOtpHash: null, studentOtpExpiry: null },
+        omit: contractInternalOmit,
         include: CONTRACT_INCLUDE,
       });
       await recordContractEmails(tx, signed, "CONTRACT_SIGNED_COPY");
@@ -161,14 +193,25 @@ export class ContractRepository extends BaseRepository {
     return this.prisma.lead.findUnique({ where: { contractId }, select: { id: true, assignedExpertUserId: true, assignedSalesManagerId: true, status: true } });
   }
 
-  /** Restricts a CRM contract to its assigned expert while preserving legacy contract access. */
-  async assertLeadExpert(contractId: string, userId?: number) {
-    const lead = await this.findLead(contractId);
-    if (lead && lead.assignedExpertUserId !== userId) throw new ForbiddenException("Only the assigned expert may manage this lead contract");
+  /** Applies the shared ownership rule to both CRM and legacy contracts. */
+  async assertLeadExpert(contractId: string, userId: number) {
+    await assertContractAccess(this.prisma, contractId, userId);
   }
 
   /** Validates merged dates under serializable isolation and prevents changes to signed CRM terms. */
-  async updateMeta(id: string, data: { contractNumber?: string; price?: number; currency?: string; serviceStartDate?: Date; serviceEndDate?: Date }): Promise<Contract> {
+  async updateMeta(
+    id: string,
+    data: {
+      contractNumber?: string;
+      price?: number;
+      currency?: string;
+      serviceStartDate?: Date;
+      serviceEndDate?: Date;
+      paymentType?: "FULL" | "INSTALLMENT";
+      installmentCount?: number;
+    },
+    actorId: number,
+  ): Promise<SafeContract> {
     const update = {
       ...(data.contractNumber && { contractNumber: data.contractNumber }),
       ...(data.price !== undefined && { price: data.price }),
@@ -177,15 +220,26 @@ export class ContractRepository extends BaseRepository {
       ...(data.serviceEndDate && { serviceEndDate: data.serviceEndDate }),
     };
     return leadTransaction(this.prisma, async tx => {
+      await assertContractAccess(tx, id, actorId, "meta");
       const contract = await tx.contract.findUniqueOrThrow({ where: { id } });
-      const lead = await tx.lead.findUnique({ where: { contractId: id }, select: { id: true } });
-      if (lead && contract.status !== ContractStatus.PENDING_EXPERT) throw new ConflictException("A signed lead contract cannot be changed");
       if (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.PAID) throw new BadRequestException("Cannot update a fully signed contract");
+      if (contract.studentSignedAt) throw new ConflictException("Manually signed terms cannot be changed");
+      const terms =
+        data.price !== undefined || data.currency !== undefined || data.paymentType !== undefined || data.installmentCount !== undefined
+          ? commercialTerms(
+              data.price ?? contract.price,
+              data.currency ?? contract.currency,
+              contract.subscriptionTier,
+              data.paymentType ?? contract.paymentType ?? "FULL",
+              data.installmentCount ?? (data.paymentType === "FULL" ? 1 : (contract.installmentCount ?? undefined)),
+              data.price === undefined && data.currency === undefined,
+            )
+          : {};
       const start = data.serviceStartDate ?? contract.serviceStartDate;
       const end = data.serviceEndDate ?? contract.serviceEndDate;
       if ((start && !Number.isFinite(start.getTime())) || (end && !Number.isFinite(end.getTime())) || (start && end && end <= start))
         throw new BadRequestException("Service end date must be after service start date");
-      return tx.contract.update({ where: { id }, data: update, include: CONTRACT_INCLUDE });
+      return tx.contract.update({ where: { id }, data: { ...update, ...terms }, omit: contractInternalOmit, include: CONTRACT_INCLUDE });
     });
   }
 
@@ -196,9 +250,13 @@ export class ContractRepository extends BaseRepository {
     return contract !== null;
   }
 
+  async usesManualPayments(studentId: number): Promise<boolean> {
+    return !!(await this.prisma.contract.findFirst({ where: { studentId, OR: [{ paymentType: { not: null } }, { manualConfirmedAt: { not: null } }] }, select: { id: true } }));
+  }
+
   async markPaidForStudent(studentId: number): Promise<number> {
     const res = await this.prisma.contract.updateMany({
-      where: { studentId, status: ContractStatus.SIGNED },
+      where: { studentId, status: ContractStatus.SIGNED, manualConfirmedAt: null, paymentType: null },
       data: { status: ContractStatus.PAID, paidAt: new Date() },
     });
     return res.count;

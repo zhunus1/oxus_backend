@@ -134,6 +134,9 @@ async function fixture(crm = true) {
   if (crm) {
     await prisma.studentPortrait.create({ data: { userId: student.id } });
     await prisma.lead.create({ data: { status: "CONTRACT_PENDING", contractId: contract.id, assignedSalesManagerId: sales, assignedExpertUserId: expert } });
+  } else {
+    const owner = await prisma.consultantProfile.findUniqueOrThrow({ where: { userId: expert } });
+    await prisma.studentPortrait.create({ data: { userId: student.id, consultantProfileId: owner.id } });
   }
   return { student, contract };
 }
@@ -160,6 +163,12 @@ before(async () => {
   process.env.JWT_SECRET = secret;
   await prisma.$connect();
   for (const code of ["ADMIN", "EXPERT", "SALES_MANAGER", "STUDENT"]) await prisma.role.upsert({ where: { code }, create: { code, name: code }, update: {} });
+  const contractPermission = await prisma.permission.upsert({
+    where: { code: "EXPERT_LEAD_CALLS_RESPOND" },
+    create: { code: "EXPERT_LEAD_CALLS_RESPOND", name: "Expert contract management" },
+    update: {},
+  });
+  await prisma.role.update({ where: { code: "EXPERT" }, data: { permissions: { connect: { id: contractPermission.id } } } });
   admin = (await user("ADMIN")).id;
   expert = (await user("EXPERT")).id;
   sales = (await user("SALES_MANAGER")).id;
@@ -206,7 +215,8 @@ before(async () => {
   useContainer(module, { fallbackOnErrors: true });
   app = module.createNestApplication();
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
-  await app.init();
+  // The suite owns the listener; Supertest must not listen/close for each request.
+  await app.listen(0, "127.0.0.1");
 });
 after(async () => {
   clients.forEach(client => client.close());
@@ -289,32 +299,26 @@ for (const crm of [true, false]) {
     assert.equal(+stored.serviceStartDate!, +contract.serviceStartDate!);
     assert.equal(+stored.serviceEndDate!, +contract.serviceEndDate!);
     await patch({ serviceStartDate: "2028-01-01T00:00:00Z", serviceEndDate: "2029-01-01T00:00:00Z" }).expect(200);
-    await patch({ price: 200000 }).expect(200);
+    await patch({ price: 1500000 }).expect(200);
   });
 }
 
 test("concurrent individually valid partial date updates cannot commit an invalid pair", async () => {
   const { contract } = await fixture();
   const results = await Promise.allSettled([
-    repo.updateMeta(contract.id, { serviceStartDate: new Date("2027-06-01Z") }),
-    repo.updateMeta(contract.id, { serviceEndDate: new Date("2027-01-01Z") }),
+    repo.updateMeta(contract.id, { serviceStartDate: new Date("2027-06-01Z") }, expert),
+    repo.updateMeta(contract.id, { serviceEndDate: new Date("2027-01-01Z") }, expert),
   ]);
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
   const stored = await prisma.contract.findUniqueOrThrow({ where: { id: contract.id } });
   assert(stored.serviceEndDate! > stored.serviceStartDate!);
 });
 
-test("expert signing persists exactly one email intent and returns queued, not delivered", async () => {
+test("online expert signing is disabled without creating email intents", async () => {
   const { contract } = await fixture();
-  const sign = () => request(app.getHttpServer()).post(`/contracts/${contract.id}/sign/expert`).set("Authorization", auth(expert)).send({});
-  const response = await sign().expect(201);
-  assert.match(response.body.message, /queued/);
-  assert(!response.body.message.includes("notified"));
-  await sign().expect(400);
-  const rows = await emailRows(contract.id);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].status, "PENDING");
-  assert.equal(rows[0].type, "CONTRACT_READY");
+  const response = await request(app.getHttpServer()).post(`/contracts/${contract.id}/sign/expert`).set("Authorization", auth(expert)).send({}).expect(409);
+  assert.equal(response.body.code, "MANUAL_SIGNATURE_REQUIRED");
+  assert.equal((await emailRows(contract.id)).length, 0);
 });
 
 test("SMTP failure survives a worker restart and queue loss, then recovers from PostgreSQL", async () => {

@@ -31,6 +31,12 @@ compose_args=(--project-name oxus_backend --env-file .env -f compose.yaml)
 if [[ -f compose.override.yaml ]]; then compose_args+=(-f compose.override.yaml); fi
 compose() { docker compose "${compose_args[@]}" "$@"; }
 compose config --quiet
+compose config --format json | python3 -c '
+import json,sys
+mode=json.load(sys.stdin)["services"]["backend"]["environment"].get("FREEDOM_TESTING_MODE")
+if mode not in ("0", "1"):
+    sys.exit("FREEDOM_TESTING_MODE must be explicitly passed as 0 or 1.")
+'
 staging=$(compose config --format json | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["services"]["backend"]["environment"]["STAGING"]).lower())')
 if [[ $deploy_environment == production ]]; then
   [[ $staging == false ]] || { echo 'Production requires STAGING=false.' >&2; exit 78; }

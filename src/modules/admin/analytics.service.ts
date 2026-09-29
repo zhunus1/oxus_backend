@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { EducationLevel, Prisma, ProcessStep } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
+import { liveContractStudent } from "src/modules/contract/domain/contract-access";
 import type { AnalyticsEventsQueryDto, AnalyticsFunnelQueryDto } from "./api/dto/analytics-query.dto";
 
 const FUNNEL_STEP_ORDER: ProcessStep[] = [
@@ -19,29 +20,12 @@ export class AnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
 
   private buildPortraitWhere(q: AnalyticsFunnelQueryDto): Prisma.StudentPortraitWhereInput {
-    const userWhere: Prisma.UserWhereInput = {
-      deletedAt: null,
-      role: { code: "STUDENT" },
-    };
-    if (q.dateFrom || q.dateTo) {
-      userWhere.createdAt = {};
-      if (q.dateFrom) userWhere.createdAt.gte = new Date(q.dateFrom);
-      if (q.dateTo) userWhere.createdAt.lte = new Date(q.dateTo);
-    }
-    if (q.country) {
-      userWhere.country = { isoCode: q.country };
-    }
-    const portraitWhere: Prisma.StudentPortraitWhereInput = { user: userWhere };
-    if (q.educationLevel) {
-      portraitWhere.educationLevel = q.educationLevel;
-    }
-    return portraitWhere;
+    return { user: this.buildUserWhere(q) };
   }
 
   private buildUserWhere(q: AnalyticsFunnelQueryDto): Prisma.UserWhereInput {
     const userWhere: Prisma.UserWhereInput = {
-      deletedAt: null,
-      role: { code: "STUDENT" },
+      ...liveContractStudent,
     };
     if (q.dateFrom || q.dateTo) {
       userWhere.createdAt = {};
@@ -86,13 +70,13 @@ export class AnalyticsService {
     const page = q.page ?? 1;
     const limit = q.limit ?? 20;
     const skip = (page - 1) * limit;
-    const userWhere = this.buildUserWhere(q);
-    const createdAt = this.eventTimeWhere(q);
+    const userWhere = this.buildUserWhere({ country: q.country, educationLevel: q.educationLevel });
+    const occurredAt = this.eventTimeWhere(q);
 
     const where: Prisma.UserJourneyEventWhereInput = {
       user: userWhere,
       ...(q.eventType ? { eventType: q.eventType } : {}),
-      ...(createdAt ? { createdAt } : {}),
+      ...(occurredAt ? { OR: [{ occurredAt }, { occurredAt: null, createdAt: occurredAt }] } : {}),
     };
 
     const [total, rows] = await this.prisma.$transaction([
@@ -108,6 +92,7 @@ export class AnalyticsService {
           eventType: true,
           eventData: true,
           createdAt: true,
+          occurredAt: true,
           user: {
             select: { firstname: true, lastname: true },
           },
@@ -124,6 +109,7 @@ export class AnalyticsService {
         eventType: r.eventType,
         eventData: r.eventData,
         createdAt: r.createdAt,
+        occurredAt: r.occurredAt ?? r.createdAt,
       })),
       total,
       page,
@@ -135,8 +121,7 @@ export class AnalyticsService {
     const user = await this.prisma.user.findFirst({
       where: {
         id: studentId,
-        deletedAt: null,
-        role: { code: "STUDENT" },
+        ...liveContractStudent,
       },
       select: {
         id: true,
@@ -158,6 +143,7 @@ export class AnalyticsService {
         eventType: true,
         eventData: true,
         createdAt: true,
+        occurredAt: true,
       },
     });
 
@@ -167,13 +153,16 @@ export class AnalyticsService {
       studentName: `${user.firstname} ${user.lastname}`.trim(),
       currentStep: user.portrait?.currentStep ?? ProcessStep.DISCOVERY,
       registeredAt: user.createdAt,
-      events,
+      events: events.map(event => ({ ...event, occurredAt: event.occurredAt ?? event.createdAt })),
       stageDurations,
     };
   }
 
-  private computeStageDurations(events: { eventType: string; createdAt: Date }[], registeredAt: Date) {
-    const firstAt = (type: string) => events.find(e => e.eventType === type)?.createdAt ?? null;
+  private computeStageDurations(events: { eventType: string; createdAt: Date; occurredAt?: Date | null }[], registeredAt: Date) {
+    const firstAt = (type: string) => {
+      const times = events.filter(e => e.eventType === type).map(e => (e.occurredAt ?? e.createdAt).getTime());
+      return times.length ? new Date(Math.min(...times)) : null;
+    };
 
     const reg = firstAt(USER_JOURNEY_EVENT.REGISTRATION) ?? registeredAt;
     const profileAt = firstAt(USER_JOURNEY_EVENT.PROFILE_FILLED);
@@ -225,71 +214,92 @@ export class AnalyticsService {
     return rows.map(r => {
       const ms = r.durationMs;
       const days = ms != null && ms >= 0 ? Math.round((ms / 86400000) * 100) / 100 : null;
-      return { ...r, durationDays: days };
+      return { ...r, durationMs: ms != null && ms >= 0 ? ms : null, durationDays: days };
     });
   }
 
   async getSummary(q: AnalyticsFunnelQueryDto) {
-    const userWhere = this.buildUserWhere(q);
+    // One snapshot prevents a concurrent first payment appearing in both lost and paid counts.
+    return this.prisma.$transaction(
+      async tx => {
+        const userWhere = this.buildUserWhere(q);
 
-    const totalStudents = await this.prisma.user.count({ where: userWhere });
+        const totalStudents = await tx.user.count({ where: userWhere });
 
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const lostCreated: Prisma.DateTimeFilter = { lte: weekAgo };
-    if (q.dateFrom) lostCreated.gte = new Date(q.dateFrom);
-
-    const lostLeads = await this.prisma.user.count({
-      where: {
-        deletedAt: null,
-        role: { code: "STUDENT" },
-        ...(q.country ? { country: { isoCode: q.country } } : {}),
-        createdAt: lostCreated,
-        portrait: {
-          is: {
-            currentStep: ProcessStep.DISCOVERY,
-            educationLevel: EducationLevel.NONE,
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const lostLeads = await tx.user.count({
+          where: {
+            // This remains the existing stalled-registration metric, within the same cohort.
+            AND: [
+              userWhere,
+              {
+                createdAt: { lte: weekAgo },
+                portrait: { is: { currentStep: ProcessStep.DISCOVERY, educationLevel: EducationLevel.NONE } },
+                journeyEvents: { none: { eventType: { in: [USER_JOURNEY_EVENT.PAYMENT_COMPLETED, USER_JOURNEY_EVENT.LEAD_CONVERTED] } } },
+                transactions: { none: { status: "SUCCESS" } },
+                studentContracts: {
+                  none: {
+                    OR: [
+                      { status: "PAID" },
+                      { manualConfirmedAt: { not: null } },
+                      { installments: { some: { paidAt: { not: null } } } },
+                      { lead: { is: { status: "CONVERTED" } } },
+                    ],
+                  },
+                },
+              },
+            ],
           },
-        },
-      },
-    });
+        });
 
-    const withProgram = await this.prisma.userJourneyEvent.findMany({
-      where: {
-        eventType: USER_JOURNEY_EVENT.PROGRAM_SELECTED,
-        user: userWhere,
-      },
-      select: {
-        createdAt: true,
-        user: { select: { createdAt: true } },
-      },
-    });
-    const msToProgram = withProgram.map(e => e.createdAt.getTime() - e.user.createdAt.getTime()).filter(x => x >= 0);
-    const avgMsToProgram = msToProgram.length > 0 ? msToProgram.reduce((a, b) => a + b, 0) / msToProgram.length : null;
+        const withProgram = await tx.userJourneyEvent.findMany({
+          where: {
+            eventType: USER_JOURNEY_EVENT.PROGRAM_SELECTED,
+            user: userWhere,
+          },
+          select: {
+            userId: true,
+            occurredAt: true,
+            createdAt: true,
+            user: { select: { createdAt: true } },
+          },
+        });
+        const msToProgram = firstUserEvents(withProgram)
+          .map(e => e.at - e.registeredAt)
+          .filter(x => x >= 0);
+        const avgMsToProgram = msToProgram.length > 0 ? msToProgram.reduce((a, b) => a + b, 0) / msToProgram.length : null;
 
-    const withPay = await this.prisma.userJourneyEvent.findMany({
-      where: {
-        eventType: USER_JOURNEY_EVENT.PAYMENT_COMPLETED,
-        user: userWhere,
-      },
-      select: {
-        createdAt: true,
-        user: { select: { createdAt: true } },
-      },
-    });
-    const msToPay = withPay.map(e => e.createdAt.getTime() - e.user.createdAt.getTime()).filter(x => x >= 0);
-    const avgMsToPayment = msToPay.length > 0 ? msToPay.reduce((a, b) => a + b, 0) / msToPay.length : null;
+        const withPay = await tx.userJourneyEvent.findMany({
+          where: {
+            eventType: USER_JOURNEY_EVENT.PAYMENT_COMPLETED,
+            user: userWhere,
+          },
+          select: {
+            userId: true,
+            occurredAt: true,
+            createdAt: true,
+            user: { select: { createdAt: true } },
+          },
+        });
+        const firstPayments = firstUserEvents(withPay);
+        // A manually paid student may be registered later. This duration is undefined, not zero.
+        const msToPay = firstPayments.map(e => e.at - e.registeredAt).filter(x => x >= 0);
+        const avgMsToPayment = msToPay.length > 0 ? msToPay.reduce((a, b) => a + b, 0) / msToPay.length : null;
 
-    const paidCount = withPay.length;
-    const conversionToPaymentPercent = totalStudents > 0 ? Math.round((paidCount / totalStudents) * 10000) / 100 : 0;
+        const paidCount = firstPayments.length;
+        const conversionToPaymentPercent = totalStudents > 0 ? Math.round((paidCount / totalStudents) * 10000) / 100 : 0;
 
-    return {
-      totalStudents,
-      averageDaysToProgramSelection: avgMsToProgram != null ? Math.round((avgMsToProgram / 86400000) * 100) / 100 : null,
-      averageDaysToPayment: avgMsToPayment != null ? Math.round((avgMsToPayment / 86400000) * 100) / 100 : null,
-      conversionToPaymentPercent,
-      lostLeads,
-      paymentsCompletedCount: paidCount,
-    };
+        return {
+          totalStudents,
+          averageDaysToProgramSelection: avgMsToProgram != null ? Math.round((avgMsToProgram / 86400000) * 100) / 100 : null,
+          averageDaysToPayment: avgMsToPayment != null ? Math.round((avgMsToPayment / 86400000) * 100) / 100 : null,
+          conversionToPaymentPercent,
+          lostLeads,
+          paymentsCompletedCount: paidCount,
+        };
+      },
+      { isolationLevel: "RepeatableRead" },
+    );
   }
 
   async listCountriesForFilters() {
@@ -302,4 +312,14 @@ export class AnalyticsService {
       },
     });
   }
+}
+
+/** Conversion counts students, not repeat purchases or repeated historical events. */
+function firstUserEvents(events: { userId: number; occurredAt: Date | null; createdAt: Date; user: { createdAt: Date } }[]) {
+  const first = new Map<number, { at: number; registeredAt: number }>();
+  for (const event of events) {
+    const at = (event.occurredAt ?? event.createdAt).getTime();
+    if (!first.has(event.userId) || at < first.get(event.userId)!.at) first.set(event.userId, { at, registeredAt: event.user.createdAt.getTime() });
+  }
+  return [...first.values()];
 }

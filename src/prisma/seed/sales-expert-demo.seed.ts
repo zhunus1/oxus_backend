@@ -10,6 +10,9 @@ import { CalculatorQuestionnaireService } from "src/modules/lead/service/calcula
 import { LeadExpertCallService } from "src/modules/lead/service/lead-expert-call.service";
 import { LeadRealtimeGateway } from "src/modules/lead/realtime/lead-realtime.gateway";
 import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
+import { commercialTerms, installmentSchedule } from "src/modules/contract/domain/manual-contract";
+import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
+import { lockStudentWithoutContract } from "src/modules/contract/domain/contract-creation";
 import {
   DEMO_EXPERT_EMAIL,
   DEMO_SALES_EMAIL,
@@ -404,61 +407,84 @@ async function insertScenario(tx: Prisma.TransactionClient, ctx: DemoContext, en
     const studentIdentity = contacts(batch, `${entry.code}-student`);
     const signed = entry.dayIndex === 2;
     const preparedAt = new Date(entry.history!.endTime.getTime() + MINUTE);
-    const expertSignedAt = entry.dayIndex > 0 ? new Date(preparedAt.getTime() + 5 * MINUTE) : null;
-    const studentSignedAt = signed ? new Date(preparedAt.getTime() + 10 * MINUTE) : null;
-    const student = await tx.user.create({
-      data: {
-        firstname: entry.role === "parent" ? "DEMO Ученик" : `DEMO ${entry.name.split(" ")[0]}`,
-        lastname: entry.name.split(" ").slice(1).join(" "),
-        ...studentIdentity,
-        password,
-        roleId: ctx.studentRoleId,
-        createdAt,
-        timezone: DEMO_TIMEZONE,
-      },
-    });
-    await tx.studentPortrait.create({
-      data: {
-        userId: student.id,
-        birthDate: new Date("2008-03-15T00:00:00Z"),
-        meta: { leadId: lead.id, demoBatch: batch, expertQuestionnaire },
-        subscription: signed ? "EXPERT_MENTORSHIP" : "FREE",
-        consultantProfileId: signed ? profileId : null,
-      },
-    });
-    const contract = await tx.contract.create({
-      data: {
-        studentId: student.id,
-        contractNumber: `DEMO-${createHash("sha256").update(batch).digest("hex").slice(0, 16)}-${entry.code}`,
-        subscriptionTier: "EXPERT_MENTORSHIP",
-        price: 250000,
-        currency: "KZT",
-        status: signed ? "SIGNED" : entry.dayIndex === 1 ? "PENDING_STUDENT" : "PENDING_EXPERT",
-        signedByUserId: expertSignedAt ? expertId : null,
-        expertSignedAt,
-        studentSignedAt,
-        serviceStartDate: demoTime(entry.day, 0),
-        serviceEndDate: new Date(demoTime(entry.day, 0).getTime() + 180 * DAY),
-        clientFullName: signed ? displayName : null,
-        studentName: signed ? `${student.firstname} ${student.lastname}` : null,
-        clientPhone: signed ? identity.phoneNumber : null,
-        clientAddress: signed ? "DEMO, г. Алматы, тестовый адрес" : null,
-        clientIin: signed ? "000000000000" : null,
-        createdAt: preparedAt,
-        updatedAt: studentSignedAt ?? expertSignedAt ?? preparedAt,
-      },
-    });
-    await activity("CONTRACT_PREPARED", expertId, preparedAt, { contractId: contract.id, studentId: student.id, reusedAccount: true, synthetic: true });
-    if (signed) {
-      await tx.studentPackage.create({ data: { studentId: student.id, expertId: profileId, totalSlots: TIER_SLOTS.EXPERT_MENTORSHIP!, createdAt: studentSignedAt! } });
-      await activity("LEAD_CONVERTED", student.id, studentSignedAt!, { contractId: contract.id, studentId: student.id, synthetic: true });
-    }
-    state = {
-      status: signed ? "CONVERTED" : "CONTRACT_PENDING",
-      statusChangedAt: studentSignedAt ?? preparedAt,
-      contract: { connect: { id: contract.id } },
-      convertedAt: studentSignedAt,
+    const studentSignedAt = entry.dayIndex > 0 ? new Date(preparedAt.getTime() + 10 * MINUTE) : null;
+    const paidAt = new Date(preparedAt.getTime() + 15 * MINUTE);
+    const studentName = { firstname: "DEMO Ученик", lastname: entry.name.split(" ").slice(1).join(" ") };
+    const terms = {
+      ...studentName,
+      email: studentIdentity.email,
+      phone: studentIdentity.phoneNumber,
+      subscriptionTier: "EXPERT_MENTORSHIP",
+      price: 1500000,
+      currency: "KZT",
+      paymentType: "FULL",
+      installmentCount: 1,
+      ...(entry.role === "parent" ? { parent: { firstname: entry.name.split(" ")[0], lastname: studentName.lastname, phone: identity.phoneNumber } } : {}),
     };
+    await tx.leadContractDraft.create({ data: { leadId: lead.id, data: json(terms), signedAt: studentSignedAt, createdAt: preparedAt } });
+    await activity("CONTRACT_PREPARED", expertId, preparedAt, { draft: true, synthetic: true });
+    if (studentSignedAt) await activity("CONTRACT_MANUAL_SIGNATURE", expertId, studentSignedAt, { signedAt: studentSignedAt.toISOString(), synthetic: true });
+    state = { status: "CONTRACT_PENDING", statusChangedAt: preparedAt };
+    // Only the paid demo scenario has an account. Other scenarios remain actionable drafts.
+    // Synthetic dates may be supplied by the demo planner; no external delivery is requested.
+    if (signed) {
+      const student = await tx.user.create({ data: { ...studentName, ...studentIdentity, password, roleId: ctx.studentRoleId, createdAt: paidAt, timezone: DEMO_TIMEZONE } });
+      await tx.studentPortrait.create({
+        data: {
+          userId: student.id,
+          birthDate: new Date("2008-03-15T00:00:00Z"),
+          meta: { leadId: lead.id, demoBatch: batch, expertQuestionnaire },
+          subscription: "EXPERT_MENTORSHIP",
+          consultantProfileId: profileId,
+        },
+      });
+      await lockStudentWithoutContract(tx, student.id);
+      const contract = await tx.contract.create({
+        data: {
+          studentId: student.id,
+          contractNumber: `DEMO-${createHash("sha256").update(batch).digest("hex").slice(0, 16)}-${entry.code}`,
+          subscriptionTier: "EXPERT_MENTORSHIP",
+          price: terms.price,
+          currency: terms.currency,
+          status: "PAID",
+          ...commercialTerms(terms.price, terms.currency, "EXPERT_MENTORSHIP", "FULL", 1),
+          manualConfirmedAt: paidAt,
+          paidAt,
+          signedByUserId: expertId,
+          expertSignedAt: studentSignedAt,
+          studentSignedAt,
+          partyDetails: json(terms),
+          serviceStartDate: demoTime(entry.day, 0),
+          serviceEndDate: new Date(demoTime(entry.day, 0).getTime() + 180 * DAY),
+          clientFullName: displayName,
+          studentName: `${student.firstname} ${student.lastname}`,
+          clientPhone: identity.phoneNumber,
+          clientAddress: "DEMO, г. Алматы, тестовый адрес",
+          clientIin: "000000000000",
+          createdAt: paidAt,
+          updatedAt: paidAt,
+        },
+      });
+      await tx.contractInstallment.create({
+        data: {
+          ...installmentSchedule(terms.price, 1, paidAt)[0],
+          contractId: contract.id,
+          paidAt,
+          confirmedAt: paidAt,
+          confirmedByUserId: expertId,
+        },
+      });
+      await tx.studentPackage.create({ data: { studentId: student.id, expertId: profileId, totalSlots: TIER_SLOTS.EXPERT_MENTORSHIP!, createdAt: paidAt } });
+      await tx.userJourneyEvent.createMany({
+        data: [
+          { eventType: USER_JOURNEY_EVENT.CONTRACT_SIGNED, occurredAt: studentSignedAt! },
+          { eventType: USER_JOURNEY_EVENT.PAYMENT_COMPLETED, occurredAt: paidAt },
+          { eventType: USER_JOURNEY_EVENT.LEAD_CONVERTED, occurredAt: paidAt },
+        ].map(event => ({ ...event, userId: student.id, createdAt: paidAt, eventData: { contractId: contract.id, leadId: lead.id, manual: true, synthetic: true } })),
+      });
+      await activity("LEAD_CONVERTED", expertId, paidAt, { contractId: contract.id, studentId: student.id, manual: true, synthetic: true });
+      state = { status: "CONVERTED", statusChangedAt: paidAt, contract: { connect: { id: contract.id } }, convertedAt: paidAt };
+    }
   }
   if (hasExpert && (entry.history || entry.position % 2 === 1)) state.expertStartedAt = new Date(bookedAt.getTime() + 5 * MINUTE);
   const updated = await tx.lead.update({ where: { id: lead.id }, data: state });

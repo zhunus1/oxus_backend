@@ -66,6 +66,12 @@ async function main() {
   await prisma.$connect();
   const run = Date.now().toString();
   for (const code of ["STUDENT", "EXPERT", "SALES_MANAGER"]) await prisma.role.upsert({ where: { code }, create: { code, name: code }, update: {} });
+  const contractPermission = await prisma.permission.upsert({
+    where: { code: "EXPERT_LEAD_CALLS_RESPOND" },
+    create: { code: "EXPERT_LEAD_CALLS_RESPOND", name: "Expert contract management" },
+    update: {},
+  });
+  await prisma.role.update({ where: { code: "EXPERT" }, data: { permissions: { connect: { id: contractPermission.id } } } });
   const createUser = async (code: string, name: string) =>
     prisma.user.create({ data: { firstname: name, lastname: "Smoke", email: `${run}-${name}@example.test`, password: "unused-test-hash", role: { connect: { code } } } });
   const manager = await createUser("SALES_MANAGER", "sales");
@@ -73,7 +79,7 @@ async function main() {
   const expert = await createUser("EXPERT", "expert");
   const otherExpert = await createUser("EXPERT", "other-expert");
   const profile = await prisma.consultantProfile.create({ data: { userId: expert.id, isActive: true } });
-  const otherProfile = await prisma.consultantProfile.create({ data: { userId: otherExpert.id, isActive: true } });
+  await prisma.consultantProfile.create({ data: { userId: otherExpert.id, isActive: true } });
   const start = new Date(Date.now() + 3 * 86400_000);
   start.setUTCHours(4, 0, 0, 0);
   await prisma.expertSchedule.create({ data: { expertId: expert.id, dayOfWeek: getLocalDateParts(start, "Asia/Almaty").dayOfWeek, startMinute: 9 * 60, endMinute: 17 * 60 + 30 } });
@@ -142,17 +148,24 @@ async function main() {
   assert.equal(await prisma.leadCallback.count({ where: { leadId: lead.id, status: "SCHEDULED" } }), 1);
   checked("follow-up has no retry limit and keeps all attempts");
   const identity = {
+    parent: { firstname: "Parent", lastname: "Smoke" },
     firstname: "Child",
     lastname: "Smoke",
     email: `${run}-child@example.test`,
     phone: `+7${run.slice(-10)}`,
     subscriptionTier: "EXPERT_MENTORSHIP" as const,
-    price: 100000,
+    price: 1500000,
     currency: "KZT",
   };
-  const [conversion, repeat] = await Promise.all([contracts.prepare(expert.id, lead.id, identity), contracts.prepare(expert.id, lead.id, identity)]);
+  const prepared = await Promise.all([contracts.prepare(expert.id, lead.id, identity), contracts.prepare(expert.id, lead.id, identity)]);
+  assert.equal(prepared[0].contract, null);
+  assert.equal(prepared[0].draft.leadId, prepared[1].draft!.leadId);
+  assert.equal(await prisma.user.count({ where: { email: identity.email } }), 0);
+  const confirmation = { signedAt: "2026-01-30T10:00:00Z", paidAt: "2026-01-31T10:00:00Z", amount: 1500000 };
+  await contracts.recordSignature(expert.id, lead.id, { signedAt: confirmation.signedAt });
+  const [conversion, repeat] = await Promise.all([contracts.confirm(expert.id, lead.id, confirmation), contracts.confirm(expert.id, lead.id, confirmation)]);
   assert.equal(conversion.contract.id, repeat.contract.id);
-  assert.equal(conversion.lead.status, "CONTRACT_PENDING");
+  assert.equal(conversion.lead.status, "CONVERTED");
   assert.notEqual(conversion.contract.studentId, owner.id);
   assert.equal(await prisma.leadCallback.count({ where: { leadId: lead.id, status: "SCHEDULED" } }), 0);
   const invitation = await prisma.leadStudentInvitation.findUniqueOrThrow({ where: { userId: conversion.contract.studentId } });
@@ -164,17 +177,8 @@ async function main() {
   await invitationService.accept({ token, password: "Strong-smoke-password" });
   await assert.rejects(invitationService.accept({ token, password: "Second-password" }));
   checked("contract preparation is idempotent; child account is separate; invitation is one-use and not an access token");
-  await assert.rejects(contractRepo.expertSign(conversion.contract.id, otherExpert.id));
-  await contractRepo.updateMeta(conversion.contract.id, { price: 100001 });
-  await contractRepo.expertSign(conversion.contract.id, expert.id);
-  await assert.rejects(contractRepo.updateMeta(conversion.contract.id, { price: 1 }));
-  await prisma.studentPortrait.update({ where: { userId: conversion.contract.studentId }, data: { consultantProfileId: otherProfile.id } });
-  const signData = { clientFullName: "Parent Smoke", studentName: "Child Smoke", clientIin: "000000000000", clientAddress: "Test address", clientPhone: draft.phone };
-  await assert.rejects(contractRepo.studentSign(conversion.contract.id, signData));
-  assert.equal((await prisma.contract.findUniqueOrThrow({ where: { id: conversion.contract.id } })).status, "PENDING_STUDENT");
-  await prisma.studentPortrait.update({ where: { userId: conversion.contract.studentId }, data: { consultantProfileId: null } });
-  const signed = await Promise.allSettled([contractRepo.studentSign(conversion.contract.id, signData), contractRepo.studentSign(conversion.contract.id, signData)]);
-  assert.equal(signed.filter(r => r.status === "fulfilled").length, 1);
+  await assert.rejects(contracts.confirm(otherExpert.id, lead.id, confirmation));
+  await assert.rejects(contractRepo.updateMeta(conversion.contract.id, { price: 750000 }, expert.id));
   assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).status, "CONVERTED");
   assert.equal((await prisma.studentPortrait.findUniqueOrThrow({ where: { userId: conversion.contract.studentId } })).consultantProfileId, profile.id);
   assert.equal(
@@ -193,8 +197,10 @@ async function main() {
   assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: rival.id } })).status, "OFFICE_INVITED");
   await assert.rejects(guests.guestAccess(offlinePreview.invitationId));
   await experts.followUp(expert.id, rival.id, { reason: "RESCHEDULED" });
-  await assert.rejects(contracts.prepare(expert.id, rival.id, identity));
-  await assert.rejects(contracts.prepare(expert.id, rival.id, { ...identity, existingStudentId: conversion.contract.studentId }));
+  const duplicateAccountLead = await prisma.lead.create({ data: { assignedExpertUserId: expert.id, status: "RECALL" } });
+  await contracts.prepare(expert.id, duplicateAccountLead.id, identity);
+  await assert.rejects(contracts.confirm(expert.id, duplicateAccountLead.id, confirmation));
+  await assert.rejects(contracts.confirm(expert.id, duplicateAccountLead.id, { ...confirmation, existingStudentId: conversion.contract.studentId }));
   await assert.rejects(calls.preview(owner.id, rival.id, { ...booking, format: "OFFICE", officeCode: "astana" }));
   await assert.rejects(calls.preview(owner.id, rival.id, { ...booking, endTime: new Date(start.getTime() + 60 * 60_000).toISOString() }));
   checked("offline uses the same confirmation flow without JaaS; unsupported office and duration rejected; existing account/contract guarded");
@@ -233,8 +239,9 @@ async function main() {
   await prisma.user.update({ where: { id: reusable.id }, data: { phoneNumber: `+8${run.slice(-10)}` } });
   const reuseLead = await prisma.lead.create({ data: { displayName: "Reuse fixture", assignedSalesManagerId: owner.id, assignedExpertUserId: expert.id, status: "RECALL" } });
   const reuseIdentity = { ...identity, email: reusable.email, phone: `+8${run.slice(-10)}` };
-  await assert.rejects(contracts.prepare(expert.id, reuseLead.id, reuseIdentity), (error: any) => error.getResponse()?.code === "EXISTING_STUDENT_CONFIRMATION_REQUIRED");
-  const reused = await contracts.prepare(expert.id, reuseLead.id, { ...reuseIdentity, existingStudentId: reusable.id });
+  await contracts.prepare(expert.id, reuseLead.id, reuseIdentity);
+  await assert.rejects(contracts.confirm(expert.id, reuseLead.id, confirmation), (error: any) => error.getResponse()?.code === "EXISTING_STUDENT_CONFIRMATION_REQUIRED");
+  const reused = await contracts.confirm(expert.id, reuseLead.id, { ...confirmation, existingStudentId: reusable.id });
   assert.equal(reused.contract.studentId, reusable.id);
   assert.equal(reused.invitationRequired, false);
   const tooSoon = new Date(Date.now() + 3600_000);

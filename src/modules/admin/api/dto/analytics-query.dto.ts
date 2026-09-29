@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from "@nestjs/swagger";
+import { ApiPropertyOptional, OmitType } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import { IsDateString, IsEnum, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 import { EducationLevel } from "generated/prisma/client";
@@ -9,7 +9,10 @@ export class AnalyticsFunnelQueryDto {
   @IsDateString()
   dateFrom?: string;
 
-  @ApiPropertyOptional({ description: "ISO date — по (включительно день может потребовать уточнения TZ)" })
+  @ApiPropertyOptional({
+    description:
+      "Inclusive registration timestamp upper bound. Date-only means midnight UTC, not end of day. Summary conversions are lifetime events for this registration cohort.",
+  })
   @IsOptional()
   @IsDateString()
   dateTo?: string;
@@ -25,7 +28,17 @@ export class AnalyticsFunnelQueryDto {
   educationLevel?: EducationLevel;
 }
 
-export class AnalyticsEventsQueryDto extends AnalyticsFunnelQueryDto {
+export class AnalyticsEventsQueryDto extends OmitType(AnalyticsFunnelQueryDto, ["dateFrom", "dateTo"] as const) {
+  @ApiPropertyOptional({ description: "Inclusive event occurredAt lower bound; legacy events fall back to createdAt. Does not filter student registration." })
+  @IsOptional()
+  @IsDateString()
+  dateFrom?: string;
+
+  @ApiPropertyOptional({ description: "Inclusive event occurredAt upper bound; use an explicit timezone for timestamps." })
+  @IsOptional()
+  @IsDateString()
+  dateTo?: string;
+
   @ApiPropertyOptional({ description: "Тип события UserJourneyEvent" })
   @IsOptional()
   @IsString()

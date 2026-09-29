@@ -1,12 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
 import { TransactionRepository } from "../repository/payment.repository";
 import { FreedomPayService } from "./freedompay.service";
 import messages from "src/configs/messages";
-import { FreedomPaymentDto } from "../api/dtos/freedom-pay.dto";
 import { SubscriptionTier } from "generated/prisma/client";
 import { ContractService } from "src/modules/contract/service/contract.service";
-import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
-import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
 
 const TIER_PRICING: Record<string, number> = {
   AI_ROADMAP: 49,
@@ -22,11 +19,11 @@ export class PaymentService {
     private repo: TransactionRepository,
     private freedompayService: FreedomPayService,
     private contractService: ContractService,
-    private readonly userJourneyLog: UserJourneyLogService,
   ) {}
 
   async createPayment(userId: number, subscriptionTier: SubscriptionTier) {
     try {
+      if (await this.contractService.usesManualPayments(userId)) throw new BadRequestException("This contract uses expert-confirmed manual payments");
       const amount = TIER_PRICING[subscriptionTier];
       if (!amount) {
         throw new BadRequestException(`Invalid subscription tier: ${subscriptionTier}`);
@@ -60,43 +57,20 @@ export class PaymentService {
     }
   }
 
-  async handleFreedomWebhook(data: FreedomPaymentDto) {
+  async handleFreedomWebhook(data: Record<string, unknown>) {
     try {
-      const transactionId = data.pg_order_id;
-      const externalPaymentId = data.pg_payment_id;
-
-      await this.freedompayService.handleWebhook(data);
-
-      if (data.pg_failure_code || data.pg_failure_description) {
-        this.logger.log(`Payment failed with code ${data.pg_failure_code} and description: ${data.pg_failure_description}`);
-        await this.repo.updateById(transactionId, { status: "FAILED", providerRef: externalPaymentId });
-      } else {
-        this.logger.log(`Successful payment with id ${transactionId}`);
-        const transaction = await this.repo.updateById(transactionId, { status: "SUCCESS", providerRef: externalPaymentId });
-
-        // Upgrade student subscription after successful payment
-        try {
-          const consultationBalance = transaction.subscriptionTier === SubscriptionTier.EXPERT_MENTORSHIP ? 8 : undefined;
-          await this.repo.upgradeSubscription(transaction.userId, transaction.subscriptionTier, consultationBalance);
-          this.logger.log(`Upgraded subscription for user ${transaction.userId} to ${transaction.subscriptionTier}`);
-          await this.repo.createPackageForSubscription(transaction.userId, transaction.subscriptionTier);
-          this.logger.log(`Created package for user ${transaction.userId} with tier ${transaction.subscriptionTier}`);
-          void this.contractService.markStudentContractPaid(transaction.userId);
-          void this.userJourneyLog.logEvent(transaction.userId, USER_JOURNEY_EVENT.PAYMENT_COMPLETED, {
-            transactionId,
-            subscriptionTier: transaction.subscriptionTier,
-            amount: transaction.amount,
-          });
-        } catch (upgradeError) {
-          this.logger.error(`Failed to upgrade subscription for user ${transaction.userId}: ${upgradeError}`);
-        }
-      }
-
+      const receipt = await this.freedompayService.handleWebhook(data);
+      await this.repo.settleFreedomPayment(receipt);
       return { status: "OK" };
     } catch (error) {
-      this.logger.error(`Internal server error while handling payment with ID ${data.pg_order_id}: ${error}`);
+      if (error instanceof HttpException) throw error;
+      this.logger.error("Payment processing failed; the provider may retry");
       throw new InternalServerErrorException(messages.INTERNAL_ERROR(this.entity));
     }
+  }
+
+  freedomWebhookAcknowledgement() {
+    return this.freedompayService.webhookAcknowledgement();
   }
 
   async findOne(id: string) {

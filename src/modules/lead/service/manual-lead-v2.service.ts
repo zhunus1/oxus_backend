@@ -50,7 +50,7 @@ export class ManualLeadV2Service {
     const submission = await leadTransaction(this.prisma, async tx => {
       const lead = await tx.lead.findFirst({ where: { id: leadId, assignedSalesManagerId: managerId, deletedAt: null } });
       if (!lead) throw new NotFoundException("Lead not found");
-      if (lead.contractId) throw new ConflictException("Contract questionnaire is already frozen");
+      if (lead.contractId || ["CONTRACT_PENDING", "CONVERTED"].includes(lead.status)) throw new ConflictException("Contract questionnaire is already frozen");
       if (lead.role !== dto.role) throw new BadRequestException("Questionnaire role must match lead role");
       const saved = await tx.leadSubmission.create({
         data: {

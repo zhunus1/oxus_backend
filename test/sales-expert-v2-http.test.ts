@@ -89,7 +89,8 @@ before(async () => {
   useContainer(module, { fallbackOnErrors: true });
   app = module.createNestApplication();
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidUnknownValues: false }));
-  await app.init();
+  // The suite owns the listener; Supertest must not listen/close for each request.
+  await app.listen(0, "127.0.0.1");
 });
 after(async () => {
   await app?.close();

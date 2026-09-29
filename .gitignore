@@ -71,7 +71,6 @@ __pycache__/
 !.vscode/extensions.json
 
 # Local tooling and reports
-/docs/
 .claude/tasks/
 graphify-out/
 tests/**/playwright-report/
