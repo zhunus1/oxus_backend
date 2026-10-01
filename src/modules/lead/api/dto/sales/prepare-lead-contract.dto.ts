@@ -1,9 +1,50 @@
 import { ApiProperty, ApiPropertyOptional, OmitType } from "@nestjs/swagger";
-import { IsEmail, IsInt, IsOptional, IsString, MaxLength, Min, MinLength } from "class-validator";
-import { Transform } from "class-transformer";
+import { IsEmail, IsInt, IsOptional, IsString, MaxLength, Min, MinLength, ValidateNested } from "class-validator";
+import { Transform, Type } from "class-transformer";
 import { CreateContractForStudentDto } from "src/modules/contract/api/dto/create-contract-for-student.dto";
-/** Validates student identity and agreed contract terms; account reuse requires explicit confirmation. */
+export class ContractParentDto {
+  @ApiProperty()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  firstname: string;
+
+  @ApiProperty()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  lastname: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() || null : value))
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  middlename?: string | null;
+
+  @ApiPropertyOptional()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim().toLowerCase() : value))
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(320)
+  email?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  phone?: string;
+}
+
+/** Validates a pre-account contract draft; all unprefixed identity fields belong to the student. */
 export class PrepareLeadContractDto extends OmitType(CreateContractForStudentDto, ["studentId", "contractNumber"] as const) {
+  @ApiPropertyOptional({ type: ContractParentDto, description: "Separate parent identity; required for parent leads" })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContractParentDto)
+  parent?: ContractParentDto;
   @ApiProperty({ description: "Student identity; for a parent lead these are the child's contacts" })
   @IsString()
   @MinLength(1)

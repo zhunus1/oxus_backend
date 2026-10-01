@@ -325,7 +325,7 @@ export class SalesLeadRepository {
   private async requireMutableOwned(tx: Prisma.TransactionClient, leadId: number, managerId: number) {
     const lead = await tx.lead.findFirst({ where: { id: leadId, assignedSalesManagerId: managerId, deletedAt: null } });
     if (!lead) throw new NotFoundException("Lead not found");
-    if (lead.contractId) throw new ConflictException("Lead is already in the contract process");
+    if (lead.contractId || ["CONTRACT_PENDING", "CONVERTED"].includes(lead.status)) throw new ConflictException("Lead is already in the contract process");
     return lead;
   }
 

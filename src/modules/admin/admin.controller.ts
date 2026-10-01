@@ -1,6 +1,8 @@
+import { PageQueryDto } from "src/common/dto/page-query.dto";
+import { financeListResponse, financeSummaryResponse, earningsResponse } from "src/common/openapi/flow-responses";
 import { LeadRealtimeGateway } from "../lead/realtime/lead-realtime.gateway";
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { ApiOperation, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { Prisma } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
 import { JwtAuthGuard } from "./auth/rbac/auth.guard";
@@ -155,6 +157,8 @@ export class AdminController {
     return this.adminService.updateCrmStudentStatus(id, dto);
   }
 
+  @ApiBearerAuth()
+  @ApiResponse({ status: 200, schema: financeListResponse })
   @Get("finance/contracts")
   @ApiOperation({ summary: "Finance: paginated contracts with filters" })
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -163,19 +167,29 @@ export class AdminController {
     return this.financeService.listContracts(query);
   }
 
+  @ApiBearerAuth()
+  @ApiResponse({ status: 200, schema: financeSummaryResponse })
   @Get("finance/summary")
-  @ApiOperation({ summary: "Finance: totals, per-status counts, expert earnings" })
+  @ApiOperation({
+    summary: "Finance: totals by currency, per-status counts, expert earnings",
+    description: "byCurrency contains labelled amounts. Legacy scalar money totals are null for mixed currencies; counts remain numeric.",
+  })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles("ADMIN")
   async getFinanceSummary() {
     return this.financeService.getSummary();
   }
 
+  @ApiBearerAuth()
+  @ApiResponse({ status: 200, schema: earningsResponse })
   @Get("finance/experts/:id/earnings")
-  @ApiOperation({ summary: "Finance: contracts and totals for one expert" })
+  @ApiOperation({
+    summary: "Finance: contracts and totals for one expert",
+    description: "totals.byCurrency contains paid/unpaid amounts per currency. Scalar totals are null for mixed currencies.",
+  })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles("ADMIN")
-  async getExpertFinanceEarnings(@Param("id", ParseIntPipe) id: number) {
-    return this.financeService.getExpertEarnings(id);
+  async getExpertFinanceEarnings(@Param("id", ParseIntPipe) id: number, @Query() query: PageQueryDto) {
+    return this.financeService.getExpertEarnings(id, query);
   }
 }

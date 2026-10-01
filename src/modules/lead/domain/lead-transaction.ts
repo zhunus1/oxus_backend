@@ -8,8 +8,11 @@ export async function leadTransaction<T>(prisma: PrismaService, operation: (tx: 
     try {
       return await prisma.$transaction(operation, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
-      const code = (error as { code?: string })?.code;
-      if (code !== "P2034" && code !== "P2002") throw error;
+      const failure = error as { code?: string; meta?: { code?: string; driverAdapterError?: { cause?: { originalCode?: string } } } };
+      const sqlState = failure?.meta?.code ?? failure?.meta?.driverAdapterError?.cause?.originalCode;
+      // Prisma wraps conflicts from SELECT FOR UPDATE in P2010 instead of P2034.
+      const rawConflict = failure?.code === "P2010" && (sqlState === "40001" || sqlState === "40P01");
+      if (failure?.code !== "P2034" && failure?.code !== "P2002" && !rawConflict) throw error;
       if (attempt === 2) throw new ConflictException("The lead or booking changed concurrently. Refresh and retry.");
     }
   }

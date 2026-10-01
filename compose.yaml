@@ -44,10 +44,11 @@ x-backend-environment: &backend-environment
   OPENAI_API_KEY: ""
   GEMINI_API_KEY: ""
   FREEDOM_API_URL: ""
+  FREEDOM_TESTING_MODE: "${FREEDOM_TESTING_MODE-0}"
   FREEDOM_MERCHANT_ID: ""
   FREEDOM_RECEIVE_SECRET_KEY: ""
   FREEDOM_PAYMENT_SECRET_KEY: ""
-  FREEDOM_RESULT_URL: http://localhost:4000/api/v1/billing/result
+  FREEDOM_RESULT_URL: ${FREEDOM_RESULT_URL:-http://localhost:4000/api/v1/payment/freedompay-webhook}
   FREEDOM_FAILURE_URL: http://localhost:3000/payment/failure
   FREEDOM_SUCCESS_URL: http://localhost:3000/payment/success
 

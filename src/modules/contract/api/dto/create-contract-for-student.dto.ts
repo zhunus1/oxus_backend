@@ -3,8 +3,9 @@ import { IsDateString, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsPositiv
 import { SubscriptionTier } from "generated/prisma/enums";
 import { Exists } from "src/common/validators/exists.validator";
 import messages from "src/configs/messages";
+import { ContractPaymentTermsDto } from "./manual-contract.dto";
 
-export class CreateContractForStudentDto {
+export class CreateContractForStudentDto extends ContractPaymentTermsDto {
   @ApiProperty({ example: 42 })
   @IsNumber()
   @IsPositive({ message: messages.MUST_BE_POSITIVE("studentId") })

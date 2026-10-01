@@ -109,7 +109,9 @@ export function demoScenarios(startDate: string): DemoScenario[] {
         role: position % 3 === 1 ? "parent" : "student",
         locale: number % 3 === 0 ? "kk" : "ru",
         description:
-          position === 10 ? ["Договор ожидает подписи эксперта", "Договор ожидает подписи клиента", "Договор подписан, ученик закреплён"][dayIndex] : descriptions[position],
+          position === 10
+            ? ["Черновик договора: ожидание ручной подписи", "Договор подписан: ожидание первого платежа", "Договор подписан и оплачен, аккаунт ученика создан"][dayIndex]
+            : descriptions[position],
       });
     }
     date = incrementCalendarDay(date.year, date.month, date.day);

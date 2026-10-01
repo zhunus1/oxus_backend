@@ -20,7 +20,7 @@ state=Path(os.environ['MOCK_STATE'])
 if args[0]=='compose':
     args=args[args.index('compose.yaml')+1:]
     if args[:1]==['config'] and '--format' in args:
-        print(json.dumps({'services':{'backend':{'environment':{'STAGING':os.environ['STAGING_TEST']}}}}))
+        print(json.dumps({'services':{'backend':{'environment':{'STAGING':os.environ['STAGING_TEST'], 'FREEDOM_TESTING_MODE':os.environ['MODE_TEST']}}}}))
     elif args[:1]==['pull'] and scenario=='pull-failure': sys.exit(1)
     elif args[:1]==['ps']: print(args[-1]+'-id')
     elif args[:1]==['up'] and args[-1]=='backend': state.write_text('new')
@@ -42,7 +42,7 @@ elif args[0]=='wait': print('1' if scenario=='migration-failure' else '0')
 
 class DeployTests(unittest.TestCase):
     def run_deploy(
-        self, scenario="success", environment="production", staging=None, image=IMAGE
+        self, scenario="success", environment="production", staging=None, image=IMAGE, mode="0"
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -79,6 +79,7 @@ class DeployTests(unittest.TestCase):
                 "SCENARIO": scenario,
                 "MOCK_STATE": str(root / "state"),
                 "OLD_IMAGE": OLD_IMAGE,
+                "MODE_TEST": mode,
                 "STAGING_TEST": staging
                 or ("false" if environment == "production" else "true"),
             }
@@ -155,6 +156,19 @@ class DeployTests(unittest.TestCase):
         result, calls, env, _ = self.run_deploy("wrong-image")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(OLD_IMAGE, env)
+
+    def test_invalid_payment_mode_fails_before_any_operational_change(self):
+        for mode in ["", "invalid", "2", "true"]:
+            with self.subTest(mode=mode):
+                result, calls, _, dumps = self.run_deploy(mode=mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("FREEDOM_TESTING_MODE", result.stderr)
+                self.assertFalse(any(c[0] == "stop" or "pull" in c or "up" in c for c in calls))
+                self.assertFalse(dumps)
+
+    def test_testing_mode_is_valid(self):
+        result, _, _, _ = self.run_deploy(environment="test", mode="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

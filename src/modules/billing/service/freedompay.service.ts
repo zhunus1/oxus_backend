@@ -1,16 +1,16 @@
 import axios from "axios";
 import crypto from "crypto";
-import { Injectable, InternalServerErrorException, Logger } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, Logger, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { XMLParser } from "fast-xml-parser";
-import { FreedomPaymentDto, PaymentIntentDto } from "../api/dtos/freedom-pay.dto";
+import { PaymentIntentDto } from "../api/dtos/freedom-pay.dto";
+import { freedomSignature, VerifiedFreedomPayment } from "../domain/freedom-signature";
 
 @Injectable()
 export class FreedomPayService {
   private readonly FREEDOM_API_URL: string;
   private readonly FREEDOM_MERCHANT_ID: string;
   private readonly FREEDOM_RECEIVE_SECRET_KEY: string;
-  private readonly FREEDOM_PAYMENT_SECRET_KEY: string;
   private readonly FREEDOM_RESULT_URL: string;
   private readonly FREEDOM_SUCCESS_URL: string;
   private readonly FREEDOM_FAILURE_URL: string;
@@ -21,7 +21,6 @@ export class FreedomPayService {
     this.FREEDOM_API_URL = this.configService.get<string>("FREEDOM_API_URL")!;
     this.FREEDOM_MERCHANT_ID = this.configService.get<string>("FREEDOM_MERCHANT_ID")!;
     this.FREEDOM_RECEIVE_SECRET_KEY = this.configService.get<string>("FREEDOM_RECEIVE_SECRET_KEY")!;
-    this.FREEDOM_PAYMENT_SECRET_KEY = this.configService.get<string>("FREEDOM_PAYMENT_SECRET_KEY")!;
     this.FREEDOM_RESULT_URL = this.configService.get<string>("FREEDOM_RESULT_URL")!;
     this.FREEDOM_SUCCESS_URL = this.configService.get<string>("FREEDOM_SUCCESS_URL")!;
     this.FREEDOM_FAILURE_URL = this.configService.get<string>("FREEDOM_FAILURE_URL")!;
@@ -39,12 +38,12 @@ export class FreedomPayService {
         pg_language: "ru",
         pg_order_id: orderId,
         pg_salt: this.generateSalt(),
-        pg_testing_mode: 1,
+        pg_testing_mode: this.testingMode(),
         pg_auto_clearing: 1,
         show_email: 0,
         pg_payment_route: "frame",
         pg_result_url: this.FREEDOM_RESULT_URL,
-        Pg_result_url_method: "POST",
+        pg_request_method: "POST",
         pg_success_url: this.FREEDOM_SUCCESS_URL,
         pg_failure_url: this.FREEDOM_FAILURE_URL,
       };
@@ -70,28 +69,70 @@ export class FreedomPayService {
     }
   }
 
-  async handleWebhook(data: FreedomPaymentDto): Promise<FreedomPaymentDto> {
-    const signature = data.pg_sig;
+  async handleWebhook(data: Record<string, unknown>): Promise<VerifiedFreedomPayment> {
+    const script = this.resultScript();
+    const signature = data?.pg_sig;
+    if (typeof signature !== "string" || !/^[a-f0-9]{32}$/.test(signature)) throw new ForbiddenException("Invalid payment signature");
+    // Incoming receipts use the same receiving merchant secret as init_payment.php, not the payout secret.
+    const expected = freedomSignature(script, data, this.FREEDOM_RECEIVE_SECRET_KEY);
+    if (!crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) throw new ForbiddenException("Invalid payment signature");
+    // The signature validator has rejected objects/arrays; fields remain uncoerced until this point.
+    const fields = data as Record<string, string | number | undefined>;
+    if (String(fields.pg_result) !== "1" || fields.pg_failure_code || fields.pg_failure_description || fields.pg_error_code)
+      throw new BadRequestException("Payment is not successful");
+    const methods = ["bankcard", "wallet", "internetbank", "other", "cash", "mobile_commerce"];
+    if (
+      !methods.includes(String(fields.pg_payment_method)) ||
+      (fields.pg_payment_method === "bankcard" && String(fields.pg_captured) !== "1") ||
+      (fields.pg_captured !== undefined && String(fields.pg_captured) !== "1")
+    )
+      throw new BadRequestException("Payment is not captured");
+    if (String(fields.pg_testing_mode) !== String(this.testingMode()) || (fields.pg_merchant_id !== undefined && String(fields.pg_merchant_id) !== this.FREEDOM_MERCHANT_ID))
+      throw new ForbiddenException("Payment context mismatch");
+    if (
+      typeof fields.pg_order_id !== "string" ||
+      !fields.pg_order_id ||
+      !/^\d+$/.test(String(fields.pg_payment_id)) ||
+      !/^\d+(?:\.\d{1,2})?$/.test(String(fields.pg_amount)) ||
+      !/^[A-Z]{3}$/.test(String(fields.pg_currency)) ||
+      typeof fields.pg_salt !== "string" ||
+      !fields.pg_salt
+    )
+      throw new BadRequestException("Invalid payment fields");
+    return {
+      orderId: fields.pg_order_id,
+      paymentId: String(fields.pg_payment_id),
+      amount: String(fields.pg_amount),
+      currency: String(fields.pg_currency),
+      merchantId: this.FREEDOM_MERCHANT_ID,
+    };
+  }
 
-    const verifiedSignature = this.generateSignature("freedompay-webhook", data, this.FREEDOM_PAYMENT_SECRET_KEY);
+  webhookAcknowledgement(): string {
+    const fields = { pg_status: "ok", pg_description: "Payment accepted", pg_salt: crypto.randomBytes(16).toString("hex") };
+    const signature = freedomSignature(this.resultScript(), fields, this.FREEDOM_RECEIVE_SECRET_KEY);
+    return `<?xml version="1.0" encoding="utf-8"?><response><pg_status>ok</pg_status><pg_description>Payment accepted</pg_description><pg_salt>${fields.pg_salt}</pg_salt><pg_sig>${signature}</pg_sig></response>`;
+  }
 
-    if (verifiedSignature != signature) {
-      this.logger.error(`BAD SIGNATURE. Correct: ${verifiedSignature}, received: ${signature}`);
+  private resultScript() {
+    if (!this.FREEDOM_RECEIVE_SECRET_KEY || !this.FREEDOM_MERCHANT_ID || !this.FREEDOM_RESULT_URL) throw new ServiceUnavailableException("Payment verification is not configured");
+    try {
+      const script = new URL(this.FREEDOM_RESULT_URL).pathname.split("/").at(-1);
+      if (!script) throw new Error();
+      return script;
+    } catch {
+      throw new ServiceUnavailableException("Payment result URL is invalid");
     }
-    return data;
+  }
+
+  private testingMode(): number {
+    const mode = String(this.configService.get<string>("FREEDOM_TESTING_MODE") ?? "0");
+    if (mode !== "0" && mode !== "1") throw new ServiceUnavailableException("Payment testing mode is invalid");
+    return Number(mode);
   }
 
   private generateSignature(scriptName: string, messageFields: Record<string, any>, paymentSecretKey: string) {
-    const messages = Object.keys(messageFields)
-      .sort()
-      .map(key => messageFields[key]);
-
-    const components: string[] = [scriptName, ...messages, paymentSecretKey];
-    const toHash = components.join(";");
-
-    const signature = crypto.createHash("md5").update(toHash).digest("hex");
-
-    return signature;
+    return freedomSignature(scriptName, messageFields, paymentSecretKey);
   }
 
   private generateSalt(): string {

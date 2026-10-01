@@ -71,7 +71,8 @@ export class LeadExpertCallService {
       }),
     ]);
     if (!lead || !expert?.consultantProfile) throw new NotFoundException("Lead or expert not found");
-    if (lead.contractId) throw new ConflictException({ statusCode: 409, error: "Conflict", code: "LEAD_CONTRACT_IN_PROGRESS", message: "Lead is already being converted" });
+    if (lead.contractId || ["CONTRACT_PENDING", "CONVERTED"].includes(lead.status))
+      throw new ConflictException({ statusCode: 409, error: "Conflict", code: "LEAD_CONTRACT_IN_PROGRESS", message: "Lead is already being converted" });
     assertLeadBookingTime(startTime, endTime, expert.timezone);
     const office = dto.format === "OFFICE" ? this.offices().find(o => o.code === dto.officeCode) : null;
     if (dto.format === "OFFICE" && !office) throw new BadRequestException("Office consultations are available only in Almaty and Shymkent; select an office");
@@ -143,7 +144,7 @@ export class LeadExpertCallService {
         include: { submissions: { take: 1, orderBy: [{ receivedAt: "desc" }, { id: "desc" }] } },
       });
       if (!lead) throw new NotFoundException("Lead not found");
-      if (lead.contractId) throw new ConflictException("Lead is already being converted");
+      if (lead.contractId || ["CONTRACT_PENDING", "CONVERTED"].includes(lead.status)) throw new ConflictException("Lead is already being converted");
       if (booking) {
         // Saving and cancelling a preview must serialize on the same invitation.
         await tx.$queryRaw`SELECT "id" FROM "LeadMeetingInvitation" WHERE "id" = ${booking.invitationId} FOR UPDATE`;

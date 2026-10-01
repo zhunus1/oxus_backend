@@ -97,10 +97,10 @@ export class ContractNotificationService implements OnModuleInit {
       await this.mail.sendMail(
         recipient.email,
         "Ваш договор готов к подписанию — AcademicApply",
-        "Договор готов. Войдите в личный кабинет и подпишите его в разделе «Профиль».",
+        "Договор готов. Свяжитесь с экспертом для подписания бумажного договора.",
         `<p>Здравствуйте, <strong>${this.escapeHtml(recipient.firstname)}</strong>!</p>
          <p>Ваш договор об оказании консалтинговых услуг с ТОО «OXUS GLOBAL STUDENT MOBILITY» готов к подписанию.</p>
-         <p>Пожалуйста, войдите в <a href="${this.escapeHtml(process.env.FRONTEND_URL ?? "https://oxusedu.com")}/profile">личный кабинет</a> и ознакомьтесь с договором в разделе «Профиль».</p>`,
+         <p>Свяжитесь с вашим экспертом для подписания бумажного договора и согласования оплаты.</p>`,
       );
     } else {
       const buffer = await this.pdf.generatePdf(contract);
