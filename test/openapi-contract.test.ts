@@ -29,6 +29,17 @@ before(async () => {
 after(async () => {
   await app?.close();
 });
+test("Express public submission documents its student form and idempotency response", () => {
+  const op = operation("/public/lead-sources/express/submissions", "post");
+  assert.ok(!op.security?.length);
+  const dto = doc.components.schemas.ExpressSubmissionDto;
+  assert.deepEqual(dto.required.sort(), ["submissionId", "locale", "schoolName", "grade", "firstName", "lastName", "phone", "countryIds", "studyFields"].sort());
+  assert.deepEqual(dto.properties.grade.enum, [9, 10, 11]);
+  assert.equal(dto.properties.countryIds.items.type, "integer");
+  assert.deepEqual(dto.properties.studyFields.items.enum, ["IT", "ENGINEERING", "BUSINESS", "ECONOMICS", "AVIATION", "MEDICINE", "LAW", "OTHER"]);
+  assert.equal(schema("/public/lead-sources/express/submissions", "post", "201").properties.created.type, "boolean");
+  for (const status of ["400", "404", "413", "429"]) assert.ok(op.responses[status]);
+});
 test("R05 finance has currency-aware nullable scalars, per-contract currencies and paged earnings", () => {
   const summary = schema("/admin/finance/summary").properties;
   for (const field of ["totalPaidAmount", "totalSignedAmount", "signedUnpaidAmount", "currency"]) assert.equal(summary[field].nullable, true);
