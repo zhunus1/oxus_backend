@@ -2,6 +2,7 @@ export const LEAD_SOURCE = {
   LEGACY_CONTACT_FORM: "legacy-contact-form",
   LANDING_CALCULATOR: "landing-calculator",
   OFFICE_MANUAL: "office-manual",
+  EXPRESS: "express",
 } as const;
 
 export const LEAD_ACTIVITY = {

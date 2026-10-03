@@ -22,6 +22,8 @@ const suites = [
   "sales-expert-v2-regression.test.ts",
   "lead-call-notifications.test.ts",
   "lead-status-migration.test.ts",
+  "lead-source-migration.test.ts",
+  "express-lead-http.test.ts",
   "sales-expert-demo.test.ts",
   "sales-expert-v2-smoke.ts",
 ];

@@ -24,5 +24,5 @@ export interface LeadSourceMapping {
 
 export interface LeadSourceAdapter<TPayload extends object = Record<string, unknown>> {
   readonly sourceCode: string;
-  map(payload: TPayload): LeadSourceMapping;
+  map(payload: TPayload): LeadSourceMapping | Promise<LeadSourceMapping>;
 }

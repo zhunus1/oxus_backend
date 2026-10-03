@@ -26,6 +26,7 @@ import { LeadIngestionService } from "./service/lead-ingestion.service";
 import { LandingCalculatorAdapter } from "./service/landing-calculator.adapter";
 import { OfficeManualAdapter } from "./service/office-manual.adapter";
 import { LegacyContactFormAdapter } from "./service/legacy-contact-form.adapter";
+import { ExpressAdapter } from "./service/express.adapter";
 import { SalesLeadService } from "./service/sales-lead.service";
 import { LeadExpertCallService } from "./service/lead-expert-call.service";
 import { LeadRealtimeModule } from "./realtime/lead-realtime.module";
@@ -69,6 +70,7 @@ import { LEAD_CALL_NOTIFICATION_QUEUE, LeadCallNotificationService, LeadCallNoti
     LandingCalculatorAdapter,
     OfficeManualAdapter,
     LegacyContactFormAdapter,
+    ExpressAdapter,
     SalesLeadService,
     LeadExpertCallService,
     CalculatorQuestionnaireService,

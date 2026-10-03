@@ -17,6 +17,10 @@ export class LeadIngestionRepository {
     return this.prisma.leadSource.findUnique({ where: { code } });
   }
 
+  countCountries(ids: number[]) {
+    return this.prisma.country.count({ where: { id: { in: ids } } });
+  }
+
   findByExternalSubmission(sourceId: number, externalSubmissionId: string) {
     return this.prisma.leadSubmission.findUnique({
       where: { sourceId_externalSubmissionId: { sourceId, externalSubmissionId } },

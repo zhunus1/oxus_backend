@@ -4,6 +4,7 @@ const leadSources = [
   { id: 1, code: "legacy-contact-form", name: "Legacy contact form" },
   { id: 2, code: "landing-calculator", name: "Landing calculator" },
   { id: 3, code: "office-manual", name: "Office manual entry" },
+  { code: "express", name: "express" },
 ];
 
 export async function seedLeadSources() {
