@@ -33,7 +33,11 @@ export class PublicLeadController {
   @Throttle({ "public-lead-submission": { limit: 30, ttl: 60_000 } })
   @Post("express/submissions")
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Create a student lead from the public Express questionnaire" })
+  @ApiOperation({
+    summary: "Create a student lead from the public Express questionnaire",
+    description:
+      "Optionally provide score (0–1000), percent (0–100) and universities (0–10000) together as integers. Results are saved without recalculation. If all three are omitted, no metrics are stored. Reusing submissionId returns the original lead without updating its results.",
+  })
   @ApiResponse({
     status: 201,
     description: "Submission accepted; created is false when the submissionId has already been received",

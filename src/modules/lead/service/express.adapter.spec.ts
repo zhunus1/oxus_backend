@@ -72,4 +72,20 @@ describe("ExpressAdapter", () => {
     countCountries.mockResolvedValue(1);
     await expect(adapter.map(payload)).rejects.toThrow("Unknown country IDs");
   });
+
+  it.each([
+    { score: 935, percent: 12, universities: 50 },
+    { score: 0, percent: 0, universities: 0 },
+    { score: 1000, percent: 100, universities: 10000 },
+  ])("preserves frontend metrics exactly: %j", async metrics => {
+    expect((await adapter.map({ ...payload, ...metrics })).metrics).toEqual(metrics);
+  });
+
+  it.each([{ score: 935 }, { score: 935, percent: 93 }, { percent: 93, universities: 50 }, { score: 935, universities: 50 }])(
+    "rejects incomplete metrics before database access: %j",
+    async metrics => {
+      await expect(adapter.map({ ...payload, ...metrics })).rejects.toBeInstanceOf(BadRequestException);
+      expect(countCountries).not.toHaveBeenCalled();
+    },
+  );
 });

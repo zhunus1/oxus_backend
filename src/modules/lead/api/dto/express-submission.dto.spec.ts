@@ -19,6 +19,12 @@ describe("Express questionnaire validation", () => {
     expect(await validate(plainToInstance(ExpressSubmissionDto, input))).toEqual([]);
   });
 
+  it("retains frontend metrics through whitelist validation", async () => {
+    const dto = plainToInstance(ExpressSubmissionDto, { ...input, score: 935, percent: 12, universities: 50 });
+    expect(await validate(dto, { whitelist: true })).toEqual([]);
+    expect(dto).toMatchObject({ score: 935, percent: 12, universities: 50 });
+  });
+
   it.each(Object.keys(input))("requires %s", async field => {
     expect((await validate(plainToInstance(ExpressSubmissionDto, { ...input, [field]: undefined }))).map(error => error.property)).toContain(field);
   });
@@ -43,6 +49,13 @@ describe("Express questionnaire validation", () => {
     ["studyFields", ["IT", "IT"]],
     ["studyFields", ["UNKNOWN"]],
     ["submittedAt", "invalid"],
+    ["score", -1],
+    ["score", 1001],
+    ["score", 1.5],
+    ["percent", -1],
+    ["percent", 101],
+    ["universities", -1],
+    ["universities", 10001],
   ])("rejects malformed %s (%j)", async (field, value) => {
     expect((await validate(plainToInstance(ExpressSubmissionDto, { ...input, [field]: value }))).map(error => error.property)).toContain(field);
   });

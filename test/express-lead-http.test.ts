@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { after, before, test } from "node:test";
+import { after, before, beforeEach, test } from "node:test";
 import { ValidationPipe, type INestApplication } from "@nestjs/common";
 import { APP_GUARD, Reflector } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
@@ -32,6 +32,7 @@ const events: number[] = [];
 const path = "/api/v1/public/lead-sources/express/submissions";
 let app: INestApplication;
 let countryIds: number[];
+let testIp = 0;
 const payload = () => ({
   submissionId: randomUUID(),
   submittedAt: "2026-10-03T09:00:00.000Z",
@@ -45,7 +46,12 @@ const payload = () => ({
   countryIds,
   studyFields: ["IT", "ENGINEERING"],
 });
-const post = (body: object) => request(app.getHttpServer()).post(path).send(body);
+const post = (body: object) => request(app.getHttpServer()).post(path).set("X-Forwarded-For", `192.0.2.${testIp}`).send(body);
+
+// Keep each test's rate-limit budget independent, using the production proxy configuration.
+beforeEach(() => {
+  testIp++;
+});
 
 before(async () => {
   await prisma.$connect();
@@ -70,6 +76,7 @@ before(async () => {
   }).compile();
   app = module.createNestApplication();
   app.setGlobalPrefix("api/v1");
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidUnknownValues: false }));
   await app.listen(0, "127.0.0.1");
 });
@@ -126,7 +133,7 @@ test("public Express submission saves an unassigned student lead, complete quest
 });
 
 test("concurrent Express retries create exactly one lead and one event", async () => {
-  const body = payload();
+  const body = { ...payload(), score: 935, percent: 12, universities: 50 };
   const responses = await Promise.all(Array.from({ length: 5 }, () => post(body).expect(201)));
   assert.equal(responses.filter(response => response.body.created).length, 1);
   const leadId = responses[0].body.leadId;
@@ -134,7 +141,53 @@ test("concurrent Express retries create exactly one lead and one event", async (
   assert.equal(await prisma.leadSubmission.count({ where: { source: { code: "express" }, externalSubmissionId: body.submissionId } }), 1);
   assert.equal(await prisma.leadActivity.count({ where: { leadId } }), 1);
   assert.equal(events.filter(id => id === leadId).length, 1);
+  const submission = await prisma.leadSubmission.findFirstOrThrow({ where: { leadId } });
+  assert.deepEqual(submission.metrics, { score: 935, percent: 12, universities: 50 });
+  assert.deepEqual(submission.rawPayload, body);
 });
+
+test("Express stores frontend metrics without recalculation and retries cannot overwrite them", async () => {
+  const body = { ...payload(), score: 935, percent: 12, universities: 50 };
+  const created = await post(body).expect(201);
+  const retry = await post({ ...body, score: 100, percent: 10, universities: 2 }).expect(201);
+  assert.deepEqual(retry.body, { leadId: created.body.leadId, created: false });
+  const submissions = await prisma.leadSubmission.findMany({ where: { leadId: created.body.leadId } });
+  assert.equal(submissions.length, 1);
+  assert.deepEqual(submissions[0].metrics, { score: 935, percent: 12, universities: 50 });
+  assert.deepEqual(submissions[0].rawPayload, body);
+  assert.equal(events.filter(id => id === created.body.leadId).length, 1);
+  const zero = await post({ ...payload(), score: 0, percent: 0, universities: 0 }).expect(201);
+  assert.deepEqual((await prisma.leadSubmission.findFirstOrThrow({ where: { leadId: zero.body.leadId } })).metrics, { score: 0, percent: 0, universities: 0 });
+});
+
+test("Express rejects incomplete, null and out-of-range metrics without creating leads", async () => {
+  const before = [await prisma.lead.count(), await prisma.leadSubmission.count()];
+  for (const metrics of [
+    { score: 935 },
+    { percent: 0 },
+    { universities: 0 },
+    { score: 0, percent: 0 },
+    { score: 0, universities: 0 },
+    { percent: 0, universities: 0 },
+    { score: null, percent: null, universities: null },
+    { score: -1, percent: 0, universities: 0 },
+    { score: 1001, percent: 93, universities: 50 },
+    { score: 935, percent: 101, universities: 50 },
+    { score: 935, percent: 93, universities: 10001 },
+  ])
+    await post({ ...payload(), ...metrics }).expect(400);
+  assert.deepEqual([await prisma.lead.count(), await prisma.leadSubmission.count()], before);
+});
+
+for (const field of ["score", "percent", "universities"]) {
+  test(`Express rejects coerced ${field} values without persisting or notifying`, async () => {
+    const before = [await prisma.lead.count(), await prisma.leadSubmission.count(), events.length];
+    for (const value of [true, false, "", " ", "1", null, [], [1], {}]) {
+      await post({ ...payload(), score: 1, percent: 1, universities: 1, [field]: value }).expect(400);
+    }
+    assert.deepEqual([await prisma.lead.count(), await prisma.leadSubmission.count(), events.length], before);
+  });
+}
 
 test("Express accepts omitted optional fields and validates phones, grades, identities, countries and study fields", async () => {
   const body = payload();
@@ -179,9 +232,9 @@ test("landing calculator endpoint retains its existing payload and response", as
       locale: "ru",
       name: "Parent Name",
       phone: "+77774821933",
-      score: 935,
-      percent: 93,
-      universities: 50,
+      score: "935",
+      percent: "93",
+      universities: "50",
       answers: [{ question: "Город?", answer: "Алматы" }],
     })
     .expect(201);
@@ -189,19 +242,12 @@ test("landing calculator endpoint retains its existing payload and response", as
   const lead = await prisma.lead.findUniqueOrThrow({ where: { id: response.body.leadId }, include: { originSource: true } });
   assert.equal(lead.originSource.code, "landing-calculator");
   assert.equal(lead.role, "parent");
+  assert.deepEqual((await prisma.leadSubmission.findFirstOrThrow({ where: { leadId: lead.id } })).metrics, { score: 935, percent: 93, universities: 50 });
 });
 
 test("Express throttles repeated submissions without creating extra leads", async () => {
   const body = payload();
-  let throttled = false;
-  for (let i = 0; i < 31; i++) {
-    const response = await post(body);
-    if (response.status === 429) {
-      throttled = true;
-      break;
-    }
-    assert.equal(response.status, 201);
-  }
-  assert.equal(throttled, true);
+  for (let i = 0; i < 30; i++) await post(body).expect(201);
+  await post(body).expect(429);
   assert.equal(await prisma.leadSubmission.count({ where: { source: { code: "express" }, externalSubmissionId: body.submissionId } }), 1);
 });

@@ -1,12 +1,13 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { leadTransaction } from "../domain/lead-transaction";
 import { PrismaService } from "src/database/prisma.service";
-import { CalculatorAnswersDto, CreateManualLeadV2Dto } from "../api/dto/sales/sales-v2.dto";
+import { CreateManualLeadV2Dto, SaveCalculatorAnswersDto } from "../api/dto/sales/sales-v2.dto";
 import { LEAD_SOURCE } from "../domain/lead.constants";
 import { normalizePhoneNumber } from "../domain/phone-number";
 import { LeadIngestionRepository } from "../repository/lead-ingestion.repository";
 import { LeadRealtimeGateway } from "../realtime/lead-realtime.gateway";
 import { CalculatorQuestionnaireService } from "./calculator-questionnaire.service";
+import { readFrontendLeadMetrics } from "../domain/lead-metrics";
 
 /** Creates manual leads and stores versioned calculator answers separately from common lead fields. */
 @Injectable()
@@ -24,7 +25,7 @@ export class ManualLeadV2Service {
     const phoneNumber = normalizePhoneNumber(dto.phone);
     if (!displayName || !phoneNumber) throw new BadRequestException("Name and valid international phone are required");
     const source = await this.source();
-    const questionnaire = this.calculator.calculate({ ...dto, answers: dto.answers ?? [] });
+    const questionnaire = this.calculator.calculate({ ...dto, answers: dto.answers ?? [] }, readFrontendLeadMetrics(dto));
     const normalized = { displayName, phoneNumber, email: dto.email.trim().toLowerCase(), role: dto.role, preferredLanguage: dto.locale };
     const lead = await this.repo.createLeadWithSubmission({
       sourceId: source.id,
@@ -44,8 +45,8 @@ export class ManualLeadV2Service {
   }
 
   /** Appends an immutable questionnaire snapshot and synchronizes its language on the owned lead. */
-  async saveAnswers(managerId: number, leadId: number, dto: CalculatorAnswersDto) {
-    const questionnaire = this.calculator.calculate(dto);
+  async saveAnswers(managerId: number, leadId: number, dto: SaveCalculatorAnswersDto) {
+    const questionnaire = this.calculator.calculate(dto, readFrontendLeadMetrics(dto));
     const source = await this.source();
     const submission = await leadTransaction(this.prisma, async tx => {
       const lead = await tx.lead.findFirst({ where: { id: leadId, assignedSalesManagerId: managerId, deletedAt: null } });

@@ -29,11 +29,28 @@ before(async () => {
 after(async () => {
   await app?.close();
 });
+test("manual lead writes expose optional frontend metrics while preview keeps its server-calculation contract", () => {
+  for (const name of ["CreateManualLeadV2Dto", "SaveCalculatorAnswersDto", "ExpressSubmissionDto"]) {
+    const dto = doc.components.schemas[name];
+    for (const [field, maximum] of Object.entries({ score: 1000, percent: 100, universities: 10000 })) {
+      assert.equal(dto.properties[field].type, "integer");
+      assert.equal(dto.properties[field].minimum, 0);
+      assert.equal(dto.properties[field].maximum, maximum);
+      assert.ok(!dto.properties[field].nullable);
+      assert.ok(!dto.required?.includes(field));
+    }
+  }
+  assert.match(operation("/sales/v2/leads", "post").description, /together/);
+  assert.match(operation("/sales/v2/leads/{id}/questionnaire", "patch").requestBody.content["application/json"].schema.$ref, /SaveCalculatorAnswersDto$/);
+  assert.ok(!doc.components.schemas.CalculatorAnswersDto.properties.score);
+});
 test("Express public submission documents its student form and idempotency response", () => {
   const op = operation("/public/lead-sources/express/submissions", "post");
   assert.ok(!op.security?.length);
   const dto = doc.components.schemas.ExpressSubmissionDto;
   assert.deepEqual(dto.required.sort(), ["submissionId", "locale", "schoolName", "grade", "firstName", "lastName", "phone", "countryIds", "studyFields"].sort());
+  for (const field of ["score", "percent", "universities"]) assert.ok(dto.properties[field]);
+  assert.match(op.description, /without recalculation/);
   assert.deepEqual(dto.properties.grade.enum, [9, 10, 11]);
   assert.equal(dto.properties.countryIds.items.type, "integer");
   assert.deepEqual(dto.properties.studyFields.items.enum, ["IT", "ENGINEERING", "BUSINESS", "ECONOMICS", "AVIATION", "MEDICINE", "LAW", "OTHER"]);
