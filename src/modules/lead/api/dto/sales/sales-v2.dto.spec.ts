@@ -1,6 +1,6 @@
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import { CreateManualLeadV2Dto, ExpertQuestionnaireDto } from "./sales-v2.dto";
+import { CalculatorAnswersDto, CreateManualLeadV2Dto, ExpertQuestionnaireDto, SaveCalculatorAnswersDto } from "./sales-v2.dto";
 
 describe("Sales v2 required contacts and optional questionnaire", () => {
   const input = { name: "  Parent Name  ", phone: " +77770000001 ", email: " PARENT@example.test ", role: "parent", locale: "ru" };
@@ -34,5 +34,30 @@ describe("Sales v2 required contacts and optional questionnaire", () => {
       "citizenshipCountryId",
       "languages",
     ]);
+  });
+
+  it.each([CreateManualLeadV2Dto, SaveCalculatorAnswersDto])("retains frontend results through whitelist validation for %p", async Dto => {
+    const dto = plainToInstance<object, object>(Dto, { ...input, answers: [], score: 935, percent: 12, universities: 50 });
+    expect(await validate(dto, { whitelist: true })).toEqual([]);
+    expect(dto).toMatchObject({ score: 935, percent: 12, universities: 50 });
+  });
+
+  it.each([
+    ["score", -1],
+    ["score", 1001],
+    ["percent", 101],
+    ["universities", 10001],
+    ["score", 1.5],
+  ])("rejects out-of-range %s=%s", async (field, value) => {
+    for (const Dto of [CreateManualLeadV2Dto, SaveCalculatorAnswersDto]) {
+      const dto = plainToInstance<object, object>(Dto, { ...input, answers: [], score: 0, percent: 0, universities: 0, [field]: value });
+      expect((await validate(dto)).map(error => error.property)).toContain(field);
+    }
+  });
+
+  it("keeps frontend result fields out of the server preview DTO", async () => {
+    const dto = plainToInstance(CalculatorAnswersDto, { role: "student", locale: "ru", answers: [], score: 935, percent: 12, universities: 50 });
+    expect(await validate(dto, { whitelist: true })).toEqual([]);
+    expect(dto).not.toHaveProperty("score");
   });
 });

@@ -23,7 +23,9 @@ const suites = [
   "lead-call-notifications.test.ts",
   "lead-status-migration.test.ts",
   "lead-source-migration.test.ts",
+  "country-migration.test.ts",
   "express-lead-http.test.ts",
+  "manual-lead-metrics-http.test.ts",
   "sales-expert-demo.test.ts",
   "sales-expert-v2-smoke.ts",
 ];

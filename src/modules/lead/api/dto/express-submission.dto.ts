@@ -1,9 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsIn, IsInt, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from "class-validator";
+import { FrontendLeadMetricsDto } from "./frontend-lead-metrics.dto";
 
 export const EXPRESS_STUDY_FIELDS = ["IT", "ENGINEERING", "BUSINESS", "ECONOMICS", "AVIATION", "MEDICINE", "LAW", "OTHER"] as const;
 
-export class ExpressSubmissionDto {
+export class ExpressSubmissionDto extends FrontendLeadMetricsDto {
   @ApiProperty({ format: "uuid", description: "Client-generated idempotency key; reuse for retries of the same submission" })
   @IsUUID()
   submissionId: string;

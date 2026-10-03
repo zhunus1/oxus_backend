@@ -10,8 +10,8 @@ export class CalculatorQuestionnaireService {
     return calculatorQuestionnaire;
   }
 
-  /** Validates answer IDs and free text, then returns localized snapshots and provisional or final metrics. */
-  calculate(dto: CalculatorAnswersDto) {
+  /** Validates answers and builds a snapshot, using supplied metrics or the legacy server calculation. */
+  calculate(dto: CalculatorAnswersDto, suppliedMetrics?: { score: number; percent: number; universities: number }) {
     if (dto.quizVersion && dto.quizVersion !== calculatorQuestionnaire.version) throw new BadRequestException("Unsupported questionnaire version");
     const questions = calculatorQuestionnaire.questionnaires[dto.role];
     const seen = new Set<string>();
@@ -26,7 +26,7 @@ export class CalculatorQuestionnaireService {
       const freeText = answer.freeText?.trim();
       if (allowsFreeText && !freeText) throw new BadRequestException("Other option requires freeText");
       if (!allowsFreeText && freeText) throw new BadRequestException("Selected option does not accept freeText");
-      score += option.weight;
+      if (!suppliedMetrics) score += option.weight;
       return {
         questionId: question.id,
         optionIds: [option.id],
@@ -44,9 +44,11 @@ export class CalculatorQuestionnaireService {
       answeredCount: answers.length,
       questionCount: questions.length,
       metrics: {
-        score,
-        percent: Math.min(Math.floor(score / 10), 100),
-        universities: answers.length ? (bands.find(b => score >= b.minScore)?.universities ?? 0) : 0,
+        ...(suppliedMetrics ?? {
+          score,
+          percent: Math.min(Math.floor(score / 10), 100),
+          universities: answers.length ? (bands.find(b => score >= b.minScore)?.universities ?? 0) : 0,
+        }),
         provisional: !complete,
       },
     };

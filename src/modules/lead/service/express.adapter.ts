@@ -4,6 +4,7 @@ import { LeadSourceAdapter, LeadSourceMapping } from "../domain/lead-source-adap
 import { LEAD_SOURCE } from "../domain/lead.constants";
 import { normalizePhoneNumber } from "../domain/phone-number";
 import { LeadIngestionRepository } from "../repository/lead-ingestion.repository";
+import { readFrontendLeadMetrics } from "../domain/lead-metrics";
 
 @Injectable()
 export class ExpressAdapter implements LeadSourceAdapter<ExpressSubmissionDto> {
@@ -19,6 +20,7 @@ export class ExpressAdapter implements LeadSourceAdapter<ExpressSubmissionDto> {
     if (!firstName || !lastName || !schoolName) throw new BadRequestException("First name, last name and school name must not be empty");
     const phoneNumber = normalizePhoneNumber(payload.phone);
     if (!phoneNumber) throw new BadRequestException("phone must be a valid international phone number");
+    const metrics = readFrontendLeadMetrics(payload);
     if ((await this.repo.countCountries(payload.countryIds)) !== payload.countryIds.length) throw new BadRequestException("Unknown country IDs");
     const normalized = {
       displayName: [lastName, firstName, middleName].filter(Boolean).join(" "),
@@ -30,6 +32,7 @@ export class ExpressAdapter implements LeadSourceAdapter<ExpressSubmissionDto> {
     };
     return {
       normalized,
+      metrics,
       normalizedPayload: { ...normalized, middleName, schoolName, grade: payload.grade, countryIds: payload.countryIds, studyFields: payload.studyFields },
       externalSubmissionId: payload.submissionId,
       submittedAt: payload.submittedAt ? new Date(payload.submittedAt) : undefined,

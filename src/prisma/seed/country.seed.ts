@@ -37,6 +37,7 @@ export async function seedCountries() {
       { id: 32, nameEn: "Viet Nam", nameRu: "Вьетнам", nameKk: "Вьетнам", isoCode: "VN" },
       { id: 33, nameEn: "Czechia", nameRu: "Чехия", nameKk: "Чехия", isoCode: "CZ" },
       { id: 34, nameEn: "Sweden", nameRu: "Швеция", nameKk: "Швеция", isoCode: "SE" },
+      { id: 35, nameEn: "Hungary", nameRu: "Венгрия", nameKk: "Мажарстан", isoCode: "HU" },
     ],
     skipDuplicates: true,
   });
