@@ -25,6 +25,12 @@ describe("Express questionnaire validation", () => {
     expect(dto).toMatchObject({ score: 935, percent: 12, universities: 50 });
   });
 
+  it.each([undefined, null, "", "Архитектура", "a".repeat(4000)])("retains optional OTHER text through whitelist validation (%s)", async studyFieldsOther => {
+    const dto = plainToInstance(ExpressSubmissionDto, { ...input, studyFields: ["OTHER"], studyFieldsOther });
+    expect(await validate(dto, { whitelist: true })).toEqual([]);
+    expect(dto.studyFieldsOther).toBe(studyFieldsOther);
+  });
+
   it.each(Object.keys(input))("requires %s", async field => {
     expect((await validate(plainToInstance(ExpressSubmissionDto, { ...input, [field]: undefined }))).map(error => error.property)).toContain(field);
   });
@@ -48,6 +54,11 @@ describe("Express questionnaire validation", () => {
     ["studyFields", []],
     ["studyFields", ["IT", "IT"]],
     ["studyFields", ["UNKNOWN"]],
+    ["studyFieldsOther", 123],
+    ["studyFieldsOther", true],
+    ["studyFieldsOther", ["Архитектура"]],
+    ["studyFieldsOther", {}],
+    ["studyFieldsOther", "a".repeat(4001)],
     ["submittedAt", "invalid"],
     ["score", -1],
     ["score", 1001],

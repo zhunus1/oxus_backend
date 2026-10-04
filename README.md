@@ -157,6 +157,8 @@ For PATCH, omit the contact fields (`name`, `phone`, `email`). The frontend uses
 
 Country IDs and results above are illustrative; use actual country IDs and frontend-calculated values. Generate `submissionId` once per logical submission and reuse the complete body for retries. Reusing a UUID returns the original lead and does not update its metrics, even if different scores are supplied. `normalizedPayload` continues to hold the processed contacts and questionnaire fields; consumers read results from the submission's `metrics`. No additional schema migration is required.
 
+For the `OTHER` study field, Express also accepts optional `studyFieldsOther` (string up to 4000 characters, or null), for example `"studyFields": ["IT", "OTHER"], "studyFieldsOther": "Архитектура"`. It is saved in `rawPayload` as submitted and in `normalizedPayload.studyFieldsOther` with surrounding whitespace removed (blank text becomes null). Existing requests without this field remain valid. Sales reads it from `GET /api/v1/sales/leads/:id`, at `submissions[].normalizedPayload.studyFieldsOther` on the Express submission. The lead list returns only submission metrics, not the full questionnaire. Previously discarded text cannot be recovered from the database; retries with an already accepted UUID do not update the original submission.
+
 ### Manual expert contracts
 
 The expert saves a contract draft without creating a student account. Paper signature and receipt of the full amount or first installment are confirmed manually; only then are the account, assignment and benefits created. New prices are 1,500,000 KZT, or 750,000 KZT for Cambridge Line. Monthly equal installments start on the actual first payment date.
