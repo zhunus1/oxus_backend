@@ -58,6 +58,21 @@ describe("ExpressAdapter", () => {
     expect(result.submittedAt).toBeUndefined();
   });
 
+  it("preserves trimmed OTHER text without changing the submitted payload", async () => {
+    const input: ExpressSubmissionDto = { ...payload, studyFields: ["IT", "OTHER"], studyFieldsOther: "  Архитектура  " };
+    const result = await adapter.map(input);
+    expect(result.normalizedPayload).toMatchObject({ studyFields: ["IT", "OTHER"], studyFieldsOther: "Архитектура" });
+    expect(input.studyFieldsOther).toBe("  Архитектура  ");
+  });
+
+  it.each([null, "", "   "])("normalizes empty OTHER text to null (%j)", async studyFieldsOther => {
+    expect((await adapter.map({ ...payload, studyFields: ["OTHER"], studyFieldsOther })).normalizedPayload.studyFieldsOther).toBeNull();
+  });
+
+  it("keeps existing OTHER submissions without free text compatible", async () => {
+    expect((await adapter.map({ ...payload, studyFields: ["OTHER"] })).normalizedPayload).not.toHaveProperty("studyFieldsOther");
+  });
+
   it.each(["firstName", "lastName", "schoolName"])("rejects whitespace-only %s", async field => {
     await expect(adapter.map({ ...payload, [field]: "   " })).rejects.toBeInstanceOf(BadRequestException);
     expect(countCountries).not.toHaveBeenCalled();

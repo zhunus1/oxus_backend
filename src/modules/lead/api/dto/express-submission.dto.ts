@@ -80,4 +80,16 @@ export class ExpressSubmissionDto extends FrontendLeadMetricsDto {
   @ArrayUnique()
   @IsIn(EXPRESS_STUDY_FIELDS, { each: true })
   studyFields: (typeof EXPRESS_STUDY_FIELDS)[number][];
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: 4000,
+    example: "Архитектура",
+    description: "Free-text study field for OTHER; optional for compatibility with existing submissions",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  studyFieldsOther?: string | null;
 }

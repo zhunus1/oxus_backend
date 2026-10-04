@@ -54,6 +54,9 @@ test("Express public submission documents its student form and idempotency respo
   assert.deepEqual(dto.properties.grade.enum, [9, 10, 11]);
   assert.equal(dto.properties.countryIds.items.type, "integer");
   assert.deepEqual(dto.properties.studyFields.items.enum, ["IT", "ENGINEERING", "BUSINESS", "ECONOMICS", "AVIATION", "MEDICINE", "LAW", "OTHER"]);
+  assert.equal(dto.properties.studyFieldsOther.type, "string");
+  assert.equal(dto.properties.studyFieldsOther.nullable, true);
+  assert.equal(dto.properties.studyFieldsOther.maxLength, 4000);
   assert.equal(schema("/public/lead-sources/express/submissions", "post", "201").properties.created.type, "boolean");
   for (const status of ["400", "404", "413", "429"]) assert.ok(op.responses[status]);
 });

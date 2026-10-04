@@ -33,7 +33,15 @@ export class ExpressAdapter implements LeadSourceAdapter<ExpressSubmissionDto> {
     return {
       normalized,
       metrics,
-      normalizedPayload: { ...normalized, middleName, schoolName, grade: payload.grade, countryIds: payload.countryIds, studyFields: payload.studyFields },
+      normalizedPayload: {
+        ...normalized,
+        middleName,
+        schoolName,
+        grade: payload.grade,
+        countryIds: payload.countryIds,
+        studyFields: payload.studyFields,
+        ...(payload.studyFieldsOther !== undefined ? { studyFieldsOther: payload.studyFieldsOther?.trim() || null } : {}),
+      },
       externalSubmissionId: payload.submissionId,
       submittedAt: payload.submittedAt ? new Date(payload.submittedAt) : undefined,
       schemaVersion: "express-v1",
