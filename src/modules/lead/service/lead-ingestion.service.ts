@@ -9,6 +9,8 @@ import { LeadIngestionRepository } from "../repository/lead-ingestion.repository
 import { LandingCalculatorAdapter } from "./landing-calculator.adapter";
 import { LegacyContactFormAdapter } from "./legacy-contact-form.adapter";
 import { OfficeManualAdapter } from "./office-manual.adapter";
+import { ExpressSubmissionDto } from "../api/dto/express-submission.dto";
+import { ExpressAdapter } from "./express.adapter";
 
 @Injectable()
 export class LeadIngestionService {
@@ -19,11 +21,13 @@ export class LeadIngestionService {
     landingAdapter: LandingCalculatorAdapter,
     officeManualAdapter: OfficeManualAdapter,
     legacyAdapter: LegacyContactFormAdapter,
+    expressAdapter: ExpressAdapter,
   ) {
     this.adapters = new Map<string, LeadSourceAdapter<any>>();
     this.adapters.set(landingAdapter.sourceCode, landingAdapter);
     this.adapters.set(officeManualAdapter.sourceCode, officeManualAdapter);
     this.adapters.set(legacyAdapter.sourceCode, legacyAdapter);
+    this.adapters.set(expressAdapter.sourceCode, expressAdapter);
   }
 
   ingestLanding(payload: LandingCalculatorSubmissionDto) {
@@ -36,6 +40,10 @@ export class LeadIngestionService {
 
   ingestLegacy(payload: CreateLeadDto) {
     return this.ingest(LEAD_SOURCE.LEGACY_CONTACT_FORM, payload);
+  }
+
+  ingestExpress(payload: ExpressSubmissionDto) {
+    return this.ingest(LEAD_SOURCE.EXPRESS, payload);
   }
 
   private async ingest(sourceCode: string, payload: object, createdByUserId?: number) {
@@ -51,7 +59,7 @@ export class LeadIngestionService {
     const source = await this.repo.findSourceByCode(sourceCode);
     if (!source || !source.isActive) throw new NotFoundException(`Lead source is not active: ${sourceCode}`);
 
-    const mapping = adapter.map(payload);
+    const mapping = await adapter.map(payload);
 
     if (mapping.externalSubmissionId) {
       const existing = await this.repo.findByExternalSubmission(source.id, mapping.externalSubmissionId);

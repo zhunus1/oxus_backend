@@ -1,4 +1,4 @@
-import { OmitType, ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IntersectionType, OmitType, ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type, Transform } from "class-transformer";
 import {
   ArrayMaxSize,
@@ -21,6 +21,7 @@ import {
 } from "class-validator";
 import { LeadMeetingFormat } from "generated/prisma/enums";
 import { CreateManualLeadDto } from "./create-manual-lead.dto";
+import { FrontendLeadMetricsDto } from "../frontend-lead-metrics.dto";
 import { CreateLeadExpertCallDto } from "./create-lead-expert-call.dto";
 
 /** Identifies one calculator answer, including free text when the option allows it. */
@@ -66,8 +67,14 @@ export class CalculatorAnswersDto {
   answers: CalculatorAnswerDto[];
 }
 
-/** Requires core lead contacts while allowing an unfinished questionnaire. */
-export class CreateManualLeadV2Dto extends OmitType(CreateManualLeadDto, ["name", "phone", "email", "answers", "score", "percent", "universities"] as const) {
+/** Accepts all three frontend metrics together; omission retains the legacy server calculation. */
+export class SaveCalculatorAnswersDto extends IntersectionType(CalculatorAnswersDto, FrontendLeadMetricsDto) {}
+
+/** Requires core lead contacts while allowing an unfinished questionnaire and optional frontend metrics. */
+export class CreateManualLeadV2Dto extends IntersectionType(
+  OmitType(CreateManualLeadDto, ["name", "phone", "email", "answers", "score", "percent", "universities"] as const),
+  FrontendLeadMetricsDto,
+) {
   @ApiProperty()
   @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsString()

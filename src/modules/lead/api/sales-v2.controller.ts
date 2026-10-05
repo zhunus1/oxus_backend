@@ -1,6 +1,6 @@
 import { SalesLeadService } from "../service/sales-lead.service";
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { ApiTags } from "@nestjs/swagger";
+import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { UserRequest } from "src/modules/admin/auth/api/dtos/user-request";
 import { JwtAuthGuard } from "src/modules/admin/auth/rbac/auth.guard";
 import { Permissions } from "src/modules/admin/auth/rbac/permissions.decorator";
@@ -12,7 +12,7 @@ import { CalculatorQuestionnaireService } from "../service/calculator-questionna
 import { ManualLeadV2Service } from "../service/manual-lead-v2.service";
 import { LeadAvailabilityService } from "../service/lead-availability.service";
 import { LeadExpertCallService } from "../service/lead-expert-call.service";
-import { CalculatorAnswersDto, CreateManualLeadV2Dto, PreviewLeadMeetingDto, SaveLeadMeetingDto } from "./dto/sales/sales-v2.dto";
+import { CalculatorAnswersDto, CreateManualLeadV2Dto, PreviewLeadMeetingDto, SaveCalculatorAnswersDto, SaveLeadMeetingDto } from "./dto/sales/sales-v2.dto";
 
 /** Exposes Sales-only questionnaire and consultation workflows using existing lead permissions. */
 @ApiTags("Sales v2")
@@ -49,13 +49,23 @@ export class SalesV2Controller {
   /** Creates a manual lead that must subsequently be opened and accepted by Sales. */
   @Post("leads")
   @Permissions(LEAD_PERMISSION.CREATE)
+  @ApiOperation({
+    summary: "Create a manual lead",
+    description:
+      "Provide score, percent and universities together to save frontend results without recalculation. Omit all three to retain server calculation. Answers and quizVersion remain validated.",
+  })
   create(@Req() req: UserRequest, @Body() dto: CreateManualLeadV2Dto) {
     return this.manual.create(req.user.id, dto);
   }
   /** Saves a questionnaire snapshot for the authenticated manager owned lead. */
   @Patch("leads/:id/questionnaire")
   @Permissions(LEAD_PERMISSION.MANAGE_OWN)
-  answers(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Body() dto: CalculatorAnswersDto) {
+  @ApiOperation({
+    summary: "Save a lead questionnaire",
+    description:
+      "Provide score, percent and universities together to save frontend results without recalculation. Omit all three to retain server calculation. Questionnaire completeness is determined by the server.",
+  })
+  answers(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Body() dto: SaveCalculatorAnswersDto) {
     return this.manual.saveAnswers(req.user.id, id, dto);
   }
   /** Returns the supported offices for consultation invitations. */

@@ -43,6 +43,7 @@ const LeadIngestionService = klass("modules/lead/service/lead-ingestion.service"
 const LandingCalculatorAdapter = klass("modules/lead/service/landing-calculator.adapter", "LandingCalculatorAdapter");
 const OfficeManualAdapter = klass("modules/lead/service/office-manual.adapter", "OfficeManualAdapter");
 const LegacyContactFormAdapter = klass("modules/lead/service/legacy-contact-form.adapter", "LegacyContactFormAdapter");
+const ExpressAdapter = klass("modules/lead/service/express.adapter", "ExpressAdapter");
 const LeadRealtimeGateway = klass("modules/lead/realtime/lead-realtime.gateway", "LeadRealtimeGateway");
 const AdminController = klass("modules/admin/admin.controller", "AdminController");
 const AdminService = klass("modules/admin/admin.service", "AdminService");
@@ -192,7 +193,14 @@ before(async () => {
     await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
     ports.push((http.address() as AddressInfo).port);
   }
-  const ingestion = new LeadIngestionService(new LeadIngestionRepository(prisma), new LandingCalculatorAdapter(), new OfficeManualAdapter(), new LegacyContactFormAdapter());
+  const ingestionRepo = new LeadIngestionRepository(prisma);
+  const ingestion = new LeadIngestionService(
+    ingestionRepo,
+    new LandingCalculatorAdapter(),
+    new OfficeManualAdapter(),
+    new LegacyContactFormAdapter(),
+    new ExpressAdapter(ingestionRepo),
+  );
   // Suppress only the eager wake to test a crash between database commit and dispatch; scheduled recovery remains real.
   const service = new ContractService(repo, {}, { enqueue() {} }, {}, { logEvent: async () => {} }, gateways[0]);
   const module = await Test.createTestingModule({

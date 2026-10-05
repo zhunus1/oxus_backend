@@ -81,3 +81,5 @@ tests/**/test-results/
 /package.server.json
 /yarn.lock.server
 /ChatExport_*/
+
+/docs

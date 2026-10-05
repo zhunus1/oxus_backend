@@ -109,6 +109,56 @@ Deployment scripts and release verification live in `deployment/`. Before activa
 
 Current integration and operational guides are listed in [docs](docs/README.md), including [expert call email notifications](docs/lead-call-notifications.md).
 
+### Frontend-calculated manual lead results
+
+`POST /api/v1/sales/v2/leads` and `PATCH /api/v1/sales/v2/leads/:id/questionnaire` accept optional top-level `score` (integer 0–1000), `percent` (integer 0–100) and `universities` (integer 0–10000). Send all three together as JSON numbers to persist frontend results without recalculation. Partial sets, null, strings (including numeric strings) and booleans return 400. Omit all three to retain the existing server calculation during frontend migration.
+
+```json
+{
+  "name": "Алихан Әлиев",
+  "phone": "+7 700 000 00 01",
+  "email": "student@example.test",
+  "role": "student",
+  "locale": "ru",
+  "quizVersion": "2026-08-22",
+  "answers": [{ "questionId": "city", "optionId": "almaty" }],
+  "score": 20,
+  "percent": 2,
+  "universities": 2
+}
+```
+
+For PATCH, omit the contact fields (`name`, `phone`, `email`). The frontend uses the same top-level result field names as the public calculator, but manual answers still use `optionId` and are validated against the supported questionnaire version. Supplied metrics are checked for ranges, not consistency with answers or each other. Questionnaire completeness and `provisional` remain server-controlled. Results are stored in both `LeadSubmission.metrics` and `normalizedPayload.questionnaire.metrics`; saving appends a snapshot and preserves history.
+
+`POST /api/v1/sales/v2/questionnaires/calculator/preview` continues to calculate on the server for existing clients. The public calculator submission contract is unchanged. No database migration is needed for this change.
+
+### Frontend-calculated Express results
+
+`POST /api/v1/public/lead-sources/express/submissions` also accepts optional top-level `score`, `percent` and `universities` with the same ranges. Send all three together as JSON numbers; incomplete sets, null, strings and booleans return 400. Values are preserved exactly in `LeadSubmission.metrics` and in the accepted `rawPayload`; the server does not calculate or verify results against Express questionnaire answers. Omitting all three preserves the existing behavior: `metrics` remains null, with no server fallback calculation for Express.
+
+```json
+{
+  "submissionId": "1bec4c5e-177d-4d1c-b8dd-4a580507523f",
+  "submittedAt": "2026-10-03T09:00:00.000Z",
+  "locale": "ru",
+  "schoolName": "Школа № 125",
+  "grade": 10,
+  "lastName": "Әлиев",
+  "firstName": "Алихан",
+  "middleName": "Ерланұлы",
+  "phone": "+7 700 000 00 01",
+  "countryIds": [10, 20],
+  "studyFields": ["IT", "ENGINEERING"],
+  "score": 935,
+  "percent": 93,
+  "universities": 50
+}
+```
+
+Country IDs and results above are illustrative; use actual country IDs and frontend-calculated values. Generate `submissionId` once per logical submission and reuse the complete body for retries. Reusing a UUID returns the original lead and does not update its metrics, even if different scores are supplied. `normalizedPayload` continues to hold the processed contacts and questionnaire fields; consumers read results from the submission's `metrics`. No additional schema migration is required.
+
+For the `OTHER` study field, Express also accepts optional `studyFieldsOther` (string up to 4000 characters, or null), for example `"studyFields": ["IT", "OTHER"], "studyFieldsOther": "Архитектура"`. It is saved in `rawPayload` as submitted and in `normalizedPayload.studyFieldsOther` with surrounding whitespace removed (blank text becomes null). Existing requests without this field remain valid. Sales reads it from `GET /api/v1/sales/leads/:id`, at `submissions[].normalizedPayload.studyFieldsOther` on the Express submission. The lead list returns only submission metrics, not the full questionnaire. Previously discarded text cannot be recovered from the database; retries with an already accepted UUID do not update the original submission.
+
 ### Manual expert contracts
 
 The expert saves a contract draft without creating a student account. Paper signature and receipt of the full amount or first installment are confirmed manually; only then are the account, assignment and benefits created. New prices are 1,500,000 KZT, or 750,000 KZT for Cambridge Line. Monthly equal installments start on the actual first payment date.
