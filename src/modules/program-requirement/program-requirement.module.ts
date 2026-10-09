@@ -4,9 +4,10 @@ import { ProgramRequirementController } from "./api/program-requirement.controll
 import { ProgramRequirementService } from "./service/program-requirement.service";
 import { ProgramRequirementRepository } from "./repository/program-requirement.repository";
 import { JwtModule } from "@nestjs/jwt";
+import { StudentDocumentAccessModule } from "src/common/authorization/student-document-access.module";
 
 @Module({
-  imports: [PrismaModule, JwtModule],
+  imports: [PrismaModule, JwtModule, StudentDocumentAccessModule],
   controllers: [ProgramRequirementController],
   providers: [ProgramRequirementService, ProgramRequirementRepository],
   exports: [ProgramRequirementService],

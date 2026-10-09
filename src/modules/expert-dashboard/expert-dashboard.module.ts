@@ -6,9 +6,10 @@ import { ExpertDashboardRepository } from "./repository/expert-dashboard.reposit
 import { ExpertDashboardController } from "./api/expert-dashboard.controller";
 import { ExpertStudentsController } from "./api/expert-students.controller";
 import { JwtModule } from "@nestjs/jwt";
+import { StudentDocumentAccessModule } from "src/common/authorization/student-document-access.module";
 
 @Module({
-  imports: [PrismaModule, AuditLogModule, JwtModule],
+  imports: [PrismaModule, AuditLogModule, JwtModule, StudentDocumentAccessModule],
   providers: [ExpertDashboardService, ExpertDashboardRepository],
   controllers: [ExpertDashboardController, ExpertStudentsController],
   exports: [ExpertDashboardRepository],

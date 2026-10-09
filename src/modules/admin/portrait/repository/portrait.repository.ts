@@ -93,7 +93,7 @@ export class PortraitRepository extends BaseRepository {
         targetPrograms: {
           include: {
             organisation: { select: { id: true, nameEn: true, nameRu: true, nameKk: true, slug: true, country: true } },
-            documents: true,
+            documents: { where: { studentPortraitId: id } },
           },
           orderBy: { deadline: { sort: "asc", nulls: "last" } },
         },

@@ -67,9 +67,9 @@ export class ProgramRequirementRepository {
     });
   }
 
-  async findDocumentsForTargetProgram(targetProgramId: number) {
+  async findDocumentsForTargetProgram(targetProgramId: number, studentPortraitId: number) {
     return this.prisma.document.findMany({
-      where: { targetProgramId },
+      where: { targetProgramId, studentPortraitId },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     });
   }

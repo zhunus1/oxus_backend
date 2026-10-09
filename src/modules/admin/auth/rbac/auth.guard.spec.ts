@@ -70,4 +70,24 @@ describe("JwtAuthGuard RBAC", () => {
 
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(UnauthorizedException);
   });
+
+  it.each(["ADMIN", "EXPERT", "STUDENT", "SCHOOLBOY", "SALES_MANAGER"])("uses current %s role state, including deletion and restoration", async code => {
+    getAllAndOverride.mockReturnValue(false);
+    verify.mockReturnValue({ sub: 17, roleCode: "ADMIN" });
+    const row = { deletedAt: null, role: { code, deletedAt: null as Date | null, permissions: [] } };
+    findUnique.mockResolvedValue(row);
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.user?.roleCode).toBe(code);
+    delete request.user;
+    row.role.deletedAt = new Date();
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(request.user).toBeUndefined();
+    row.role.deletedAt = null;
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(findUnique).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ role: { select: { code: true, deletedAt: true, permissions: { select: { code: true } } } } }),
+      }),
+    );
+  });
 });

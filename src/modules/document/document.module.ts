@@ -9,9 +9,10 @@ import { DocumentController } from "./api/document.controller";
 import { JwtModule } from "@nestjs/jwt";
 
 import { UserJourneyModule } from "src/modules/user-journey/user-journey.module";
+import { StudentDocumentAccessModule } from "src/common/authorization/student-document-access.module";
 
 @Module({
-  imports: [PrismaModule, JwtModule, MinioModule, AuditLogModule, StudentPortraitModule, UserJourneyModule],
+  imports: [PrismaModule, JwtModule, MinioModule, AuditLogModule, StudentPortraitModule, UserJourneyModule, StudentDocumentAccessModule],
   providers: [DocumentService, DocumentRepository],
   exports: [DocumentService],
   controllers: [DocumentController],

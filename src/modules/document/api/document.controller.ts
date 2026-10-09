@@ -27,6 +27,7 @@ export class DocumentController {
   @ApiOperation({ summary: "Upload a document" })
   @ApiConsumes("multipart/form-data")
   @ApiResponse({ status: 201, description: "Document uploaded successfully" })
+  @ApiResponse({ status: 403, description: "Document upload access denied" })
   @UseInterceptors(FileInterceptor("file"))
   @Post()
   async upload(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateDocumentDto) {
@@ -36,22 +37,26 @@ export class DocumentController {
 
   @ApiOperation({ summary: "Get my documents" })
   @ApiResponse({ status: 200, description: "Documents fetched successfully" })
+  @ApiResponse({ status: 403, description: "Document list access denied" })
   @Get("me")
   async findMy(@Req() req: UserRequest) {
     const portraitId = await this.getPortraitId(req.user.id);
-    return this.documentService.findMyDocuments(portraitId);
+    return this.documentService.findMyDocuments(req.user.id, portraitId);
   }
 
   @ApiOperation({ summary: "Get document by id" })
   @ApiResponse({ status: 200, description: "Document fetched successfully" })
+  @ApiResponse({ status: 403, description: "Document read access denied" })
   @Get(":id")
-  async findById(@Param("id", ParseIntPipe) id: number) {
-    return this.documentService.findById(id);
+  async findById(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.documentService.findById(req.user.id, id);
   }
 
   @ApiOperation({ summary: "Upload new version of document" })
   @ApiConsumes("multipart/form-data")
   @ApiResponse({ status: 200, description: "New version uploaded successfully" })
+  @ApiResponse({ status: 403, description: "Document replacement access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before replacing" })
   @UseInterceptors(FileInterceptor("file"))
   @Patch(":id/new-version")
   async newVersion(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
@@ -61,16 +66,20 @@ export class DocumentController {
 
   @ApiOperation({ summary: "Submit document for expert review" })
   @ApiResponse({ status: 200, description: "Document submitted for review" })
+  @ApiResponse({ status: 403, description: "Document submission access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before submitting" })
   @Patch(":id/submit-for-review")
   async submitForReview(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
     const portraitId = await this.getPortraitId(req.user.id);
     return this.documentService.submitForReview(req.user.id, portraitId, id);
   }
 
-  @ApiOperation({ summary: "Expert reviews a document" })
+  @ApiOperation({ summary: "Assigned active expert or admin reviews a document" })
   @ApiResponse({ status: 200, description: "Document reviewed successfully" })
+  @ApiResponse({ status: 403, description: "Document review access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before reviewing" })
   @UseGuards(RolesGuard)
-  @Roles("EXPERT")
+  @Roles("EXPERT", "ADMIN")
   @Patch(":id/review")
   async review(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Body() dto: ReviewDocumentDto) {
     return this.documentService.review(req.user.id, id, dto);

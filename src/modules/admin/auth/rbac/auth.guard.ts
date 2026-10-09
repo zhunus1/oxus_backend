@@ -46,6 +46,7 @@ export class JwtAuthGuard implements CanActivate {
           role: {
             select: {
               code: true,
+              deletedAt: true,
               permissions: { select: { code: true } },
             },
           },
@@ -53,6 +54,9 @@ export class JwtAuthGuard implements CanActivate {
       });
       if (!userRow || userRow.deletedAt != null) {
         throw new UnauthorizedException("Account is disabled");
+      }
+      if (userRow.role.deletedAt != null) {
+        throw new ForbiddenException("Role is disabled");
       }
 
       req.user = payload;

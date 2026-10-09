@@ -28,6 +28,7 @@
     "test:sales-demo": "nest build && node --import tsx --test --test-concurrency=1 test/sales-expert-demo.test.ts",
     "test:manual-contracts": "nest build && node --import tsx --test --test-concurrency=1 test/manual-contract-http.test.ts",
     "test:phase1-security": "nest build && node --import tsx --test --test-concurrency=1 test/phase1-contract-security.test.ts",
+    "test:documents-security": "nest build && node test/run-document-security.mjs",
     "test:phase2-reporting": "nest build && node --import tsx --test --test-concurrency=1 test/phase2-reporting.test.ts",
     "test:integration": "node test/run-integration.mjs"
   },

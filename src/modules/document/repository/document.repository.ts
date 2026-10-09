@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
-import { DocumentStatus, RequirementType } from "generated/prisma/client";
+import { Document, DocumentStatus, RequirementType } from "generated/prisma/client";
 
 @Injectable()
 export class DocumentRepository extends BaseRepository {
@@ -19,16 +19,16 @@ export class DocumentRepository extends BaseRepository {
     return this.prisma.document.findUnique({ where: { id } });
   }
 
-  async updateVersion(id: number, fileUrl: string, version: number) {
+  async updateVersion(doc: Document, fileUrl: string) {
     return this.prisma.document.update({
-      where: { id },
-      data: { fileUrl, version, status: DocumentStatus.DRAFT, feedback: null },
+      where: { id: doc.id, version: doc.version, updatedAt: doc.updatedAt, status: doc.status, fileUrl: doc.fileUrl },
+      data: { fileUrl, version: { increment: 1 }, status: DocumentStatus.DRAFT, feedback: null },
     });
   }
 
-  async updateStatus(id: number, status: DocumentStatus, feedback?: string) {
+  async updateStatus(doc: Document, status: DocumentStatus, feedback?: string) {
     return this.prisma.document.update({
-      where: { id },
+      where: { id: doc.id, version: doc.version, updatedAt: doc.updatedAt, status: doc.status, fileUrl: doc.fileUrl },
       data: { status, feedback: feedback ?? undefined },
     });
   }

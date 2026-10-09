@@ -34,7 +34,7 @@ export class TargetProgramController {
   @Get("me")
   async findMy(@Req() req: UserRequest) {
     const portraitId = await this.getPortraitId(req.user.id);
-    return this.targetProgramService.findMyPrograms(portraitId);
+    return this.targetProgramService.findMyPrograms(req.user.id, portraitId);
   }
 
   @ApiOperation({ summary: "Get target program by id" })
@@ -43,7 +43,7 @@ export class TargetProgramController {
   @Get(":id")
   async findById(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
     const portraitId = await this.getPortraitId(req.user.id);
-    return this.targetProgramService.findById(portraitId, id);
+    return this.targetProgramService.findById(req.user.id, portraitId, id);
   }
 
   @ApiOperation({ summary: "Update target program" })
