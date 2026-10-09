@@ -1,12 +1,10 @@
 // Each suite gets a fresh migrated database; shared role mutations cannot leak across suites.
-import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { Client } from "pg";
+import { localTestDatabaseUrl, localTestRedisUrl, testChildEnvironment, runCommand, withCleanup, withDisposableDatabase } from "./runner-utils.mjs";
 
-const base = new URL(process.env.DATABASE_URL ?? "");
-assert(["localhost", "127.0.0.1"].includes(base.hostname) && base.pathname.endsWith("_test"), "Use a disposable local *_test database");
-assert(process.env.SALES_V2_TEST_REDIS_URL, "SALES_V2_TEST_REDIS_URL is required (Redis integration must not be skipped)");
+const environment = testChildEnvironment(process.env.DATABASE_URL);
+const base = localTestDatabaseUrl(environment.DATABASE_URL);
+localTestRedisUrl(environment.SALES_V2_TEST_REDIS_URL);
 const suites = [
   "phase4-reporting.test.ts",
   "openapi-contract.test.ts",
@@ -28,31 +26,23 @@ const suites = [
   "manual-lead-metrics-http.test.ts",
   "sales-expert-demo.test.ts",
   "sales-expert-v2-smoke.ts",
+  "document-security-http.test.ts",
 ];
-function run(args, env) {
-  const result = spawnSync(process.execPath, args, { env, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Command failed (${result.status ?? result.signal}): ${args.join(" ")}`);
-}
 const admin = new Client({ connectionString: base.toString() });
-await admin.connect();
-try {
+await withCleanup(async () => {
+  await admin.connect();
+  console.log("\nIntegration suite: test-runner.test.mjs");
+  runCommand(["--test", "test/test-runner.test.mjs"], environment);
   for (const suite of suites) {
-    const name = `oxus_ci_${randomUUID().replaceAll("-", "")}_test`;
-    const url = new URL(base);
-    url.pathname = `/${name}`;
-    const env = { ...process.env, DATABASE_URL: url.toString() };
-    // Identifier is generated locally from fixed text and hex, never from user input.
-    await admin.query(`CREATE DATABASE "${name}"`);
-    try {
+    await withDisposableDatabase(admin, base, "oxus_ci", async url => {
+      const env = testChildEnvironment(url, environment);
       console.log(`\nIntegration suite: ${suite}`);
-      run(["node_modules/prisma/build/index.js", "migrate", "deploy"], env);
-      run(["node_modules/prisma/build/index.js", "migrate", "diff", "--from-config-datasource", "--to-schema", "src/prisma/schema.prisma", "--exit-code"], env);
-      run(["--import", "tsx", ...(suite.endsWith(".test.ts") ? ["--test", "--test-concurrency=1"] : []), `test/${suite}`], env);
-    } finally {
-      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
-    }
+      runCommand(["node_modules/prisma/build/index.js", "migrate", "deploy"], env);
+      runCommand(["node_modules/prisma/build/index.js", "migrate", "diff", "--from-config-datasource", "--to-schema", "src/prisma/schema.prisma", "--exit-code"], env);
+      runCommand(["--import", "tsx", ...(suite.endsWith(".test.ts") ? ["--test", "--test-concurrency=1"] : []), `test/${suite}`], env);
+    });
   }
-} finally {
-  await admin.end();
-}
+  // This suite owns its baseline-before/after database; an outer migrated DB would be redundant.
+  console.log("\nIntegration suite: document-schema-migration.test.ts");
+  runCommand(["--import", "tsx", "--test", "--test-concurrency=1", "test/document-schema-migration.test.ts"], environment);
+}, () => admin.end());

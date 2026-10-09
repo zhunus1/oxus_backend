@@ -8,24 +8,27 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { before, after, test } from "node:test";
 import { Client } from "pg";
+import { localTestDatabaseUrl, testChildEnvironment, withCleanup } from "./runner-utils.mjs";
 
 const migration = "20261009120000_document_private_fields";
-const base = new URL(process.env.DATABASE_URL ?? "");
-assert(["localhost", "127.0.0.1"].includes(base.hostname) && base.pathname.endsWith("_test"), "Use a disposable local *_test PostgreSQL server");
+const environment = testChildEnvironment(process.env.DATABASE_URL);
+const base = localTestDatabaseUrl(environment.DATABASE_URL);
 const name = `oxus_document_migration_${randomUUID().replaceAll("-", "")}_test`;
 const own = new URL(base);
 own.pathname = `/${name}`;
 const admin = new Client({ connectionString: base.toString() });
 const client = new Client({ connectionString: own.toString() });
-const env = { ...process.env, DATABASE_URL: own.toString() };
+const env = testChildEnvironment(own.toString(), environment);
 let directory: string | undefined;
+let created = false;
 let originalRows: Record<string, any>[];
 let originalConstraints: Record<string, any>[];
 let baselineCount: number;
 
 function prisma(args: string[]) {
   const result = spawnSync(process.execPath, ["node_modules/prisma/build/index.js", ...args], { env, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.signal ? `Prisma command terminated by ${result.signal}` : result.stdout + result.stderr);
   return result.stdout;
 }
 async function constraints() {
@@ -47,6 +50,7 @@ async function assertPreserved() {
 before(async () => {
   await admin.connect();
   await admin.query(`CREATE DATABASE "${name}"`);
+  created = true;
   await client.connect();
   directory = await mkdtemp(join(tmpdir(), "oxus-document-phase2a-migrate-"));
   await cp(resolve("src/prisma/migrations"), join(directory, "migrations"), { recursive: true });
@@ -98,13 +102,22 @@ before(async () => {
 });
 
 after(async () => {
-  await client.end();
-  try {
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-  } finally {
-    await admin.end();
-    if (directory) await rm(directory, { recursive: true, force: true });
-  }
+  await withCleanup(
+    () =>
+      withCleanup(
+        () => client.end(),
+        async () => {
+          if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+        },
+      ),
+    () =>
+      withCleanup(
+        () => admin.end(),
+        async () => {
+          if (directory) await rm(directory, { recursive: true, force: true });
+        },
+      ),
+  );
 });
 
 test("additive migration preserves both historical documents, values, dates and links; new fields are nullable NULL", async () => {
