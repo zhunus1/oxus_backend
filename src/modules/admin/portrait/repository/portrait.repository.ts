@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { PUBLIC_DOCUMENT_SELECT } from "src/common/serialization/public-document";
 import { ApplicationStatus, Prisma, ProcessStep } from "generated/prisma/client";
 import { BaseRepository } from "src/database/prisma.repository";
 import { StudentPortraitQueryDto } from "../api/dto/student-portrait-query.dto";
@@ -93,11 +94,11 @@ export class PortraitRepository extends BaseRepository {
         targetPrograms: {
           include: {
             organisation: { select: { id: true, nameEn: true, nameRu: true, nameKk: true, slug: true, country: true } },
-            documents: { where: { studentPortraitId: id } },
+            documents: { where: { studentPortraitId: id, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT },
           },
           orderBy: { deadline: { sort: "asc", nulls: "last" } },
         },
-        documents: { orderBy: { updatedAt: "desc" } },
+        documents: { where: { deletedAt: null }, orderBy: { updatedAt: "desc" }, select: PUBLIC_DOCUMENT_SELECT },
         reviews: true,
         assignedExpert: { include: { user: { select: { id: true, firstname: true, lastname: true } } } },
       },

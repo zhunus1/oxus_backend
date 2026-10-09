@@ -75,6 +75,19 @@ const dashboardRepo = Object.assign(new DashboardRepository(), { prisma });
 let app: INestApplication;
 let expert: number, otherExpert: number, admin: number, student: number, schoolboy: number, sales: number;
 let portrait: number, schoolPortrait: number, target: number, foreignTarget: number;
+const publicDocumentFields = ["id", "title", "fileUrl", "documentType", "version", "status", "feedback", "studentPortraitId", "targetProgramId", "createdAt", "updatedAt"].sort();
+
+function assertPublicDocument(doc: any) {
+  assert.deepEqual(Object.keys(doc).sort(), publicDocumentFields);
+}
+function assertNoInternalFields(value: any) {
+  if (!value || typeof value !== "object") return;
+  if (Object.hasOwn(value, "documentType")) {
+    assert(!Object.hasOwn(value, "fileKey"), "Internal fileKey leaked");
+    assert(!Object.hasOwn(value, "deletedAt"), "Internal deletedAt leaked");
+  }
+  for (const nested of Object.values(value)) assertNoInternalFields(nested);
+}
 
 function http(actor: number, method: "get" | "post" | "patch", path: string) {
   // A forged privileged claim must never override the current role in the database.
@@ -179,7 +192,7 @@ for (const [name, actor, owner, expected] of [
   test(`document read: ${name}`, async () => {
     const doc = await document("DRAFT", owner());
     const res = await http(actor(), "get", `/documents/${doc.id}`).expect(expected);
-    if (expected === 200) assert.deepEqual(Object.keys(res.body).sort(), Object.keys(doc).sort());
+    if (expected === 200) assertPublicDocument(res.body);
     else assert.equal(res.body.fileUrl, undefined);
   });
 test("document read: inactive consultant", async () => {
@@ -667,3 +680,209 @@ for (const [code, actor] of [
     await me().expect(200);
     await signOut().expect(200);
   });
+
+test("all six self Document responses keep eleven fields even with a populated internal fileKey", async () => {
+  const uploaded = await multipart(student);
+  assert.equal(uploaded.status, 201);
+  assertPublicDocument(uploaded.body);
+  await prisma.document.update({ where: { id: uploaded.body.id }, data: { fileKey: "private/test-only-key" } });
+  for (const actor of [student, expert, admin]) {
+    const read = await http(actor, "get", `/documents/${uploaded.body.id}`).expect(200);
+    assertPublicDocument(read.body);
+  }
+  const listed = await http(student, "get", "/documents/me").expect(200);
+  for (const row of listed.body) assertPublicDocument(row);
+  const replaced = await multipart(student, undefined, `/documents/${uploaded.body.id}/new-version`, "patch");
+  assert.equal(replaced.status, 200);
+  assertPublicDocument(replaced.body);
+  const submitted = await http(student, "patch", `/documents/${uploaded.body.id}/submit-for-review`).expect(200);
+  assertPublicDocument(submitted.body);
+  const reviewed = await http(expert, "patch", `/documents/${uploaded.body.id}/review`).send({ status: "APPROVED" }).expect(200);
+  assertPublicDocument(reviewed.body);
+  assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: uploaded.body.id } })).fileKey, "private/test-only-key");
+});
+
+for (const operation of ["read", "review", "replace", "submit"] as const)
+  test(`archived Document cannot ${operation}, without upload, audit or row changes`, async () => {
+    const doc = await document(operation === "review" ? "REVIEW" : "DRAFT");
+    const archived = await prisma.document.update({ where: { id: doc.id }, data: { fileKey: "private/archived-test", deletedAt: new Date() } });
+    const calls = uploadCalls;
+    if (operation === "read") {
+      for (const actor of [student, expert, admin]) await http(actor, "get", `/documents/${doc.id}`).expect(404);
+    }
+    if (operation === "review") {
+      for (const actor of [expert, admin]) await http(actor, "patch", `/documents/${doc.id}/review`).send({ status: "APPROVED" }).expect(404);
+    }
+    if (operation === "replace") assert.equal((await multipart(student, undefined, `/documents/${doc.id}/new-version`, "patch")).status, 404);
+    if (operation === "submit") await http(student, "patch", `/documents/${doc.id}/submit-for-review`).expect(404);
+    assert.deepEqual(await prisma.document.findUniqueOrThrow({ where: { id: doc.id } }), archived);
+    assert.equal(uploadCalls, calls);
+    assert.equal(await prisma.auditLog.count({ where: { entityType: "Document", entityId: doc.id } }), 0);
+  });
+
+test("CRM, full portrait, dashboard and program readers hide internal fields and archived/mislinked documents", async () => {
+  await prisma.targetProgram.update({ where: { id: target }, data: { applicationStatus: "IN_PROGRESS", statusChangedAt: new Date("2020-01-01") } });
+  const active = await document("DRAFT", portrait, target);
+  await prisma.document.update({ where: { id: active.id }, data: { fileKey: "private/nested-test" } });
+  const archived = await document("DRAFT", portrait, target);
+  await prisma.document.update({ where: { id: archived.id }, data: { deletedAt: new Date(), fileKey: "private/archive-nested" } });
+  const foreign = await document("DRAFT", schoolPortrait, target);
+  await prisma.document.update({ where: { id: foreign.id }, data: { fileKey: "private/foreign-nested" } });
+  const crm = await http(admin, "get", `/admin/crm/students/${student}`).expect(200);
+  const crmDocs = crm.body.detail.portrait.documents;
+  assert(crmDocs.some((d: any) => d.id === active.id));
+  assert(!crmDocs.some((d: any) => d.id === archived.id || d.id === foreign.id));
+  assert.deepEqual(
+    Object.keys(crmDocs.find((d: any) => d.id === active.id)).sort(),
+    ["id", "title", "fileUrl", "documentType", "version", "status", "feedback", "createdAt", "updatedAt"].sort(),
+  );
+  assertNoInternalFields(crm.body);
+  for (const actor of [admin, expert]) {
+    const full = await http(actor, "get", `/expert/portraits/${portrait}/full`).expect(200);
+    const nested = full.body.targetPrograms.find((p: any) => p.id === target).documents;
+    for (const rows of [full.body.documents, nested]) {
+      assert(rows.some((d: any) => d.id === active.id));
+      assert(!rows.some((d: any) => d.id === archived.id || d.id === foreign.id));
+      for (const row of rows) assertPublicDocument(row);
+    }
+    assertNoInternalFields(full.body);
+  }
+  for (const path of ["/target-programs/me", `/target-programs/${target}`]) {
+    const response = await http(student, "get", path).expect(200);
+    const program = Array.isArray(response.body) ? response.body.find((p: any) => p.id === target) : response.body;
+    assert(program.documents.some((d: any) => d.id === active.id));
+    assert(!program.documents.some((d: any) => d.id === archived.id || d.id === foreign.id));
+    for (const row of program.documents) assertPublicDocument(row);
+    assertNoInternalFields(response.body);
+  }
+  const updated = await http(student, "patch", `/target-programs/${target}`).send({ intake: "Fall 2026" }).expect(200);
+  assert(updated.body.documents.some((d: any) => d.id === active.id));
+  assert(!updated.body.documents.some((d: any) => d.id === archived.id || d.id === foreign.id));
+  assertNoInternalFields(updated.body);
+  for (const path of ["/expert/dashboard/kanban", "/expert/dashboard/stale"]) {
+    const response = await http(expert, "get", path).expect(200);
+    const students = Array.isArray(response.body) ? response.body : (Object.values(response.body).flat() as any[]);
+    const found = students.find((s: any) => s.id === portrait);
+    assert(found, "Fixture must be present, including stale list");
+    assert(found.documents.some((d: any) => d.id === active.id));
+    assert(!found.documents.some((d: any) => d.id === archived.id || d.id === foreign.id));
+    assert.deepEqual(Object.keys(found.documents.find((d: any) => d.id === active.id)).sort(), ["id", "title", "status", "documentType", "version", "updatedAt"].sort());
+    assertNoInternalFields(response.body);
+  }
+  const self = await http(student, "get", "/documents/me").expect(200);
+  assert(self.body.some((d: any) => d.id === active.id));
+  assert(!self.body.some((d: any) => d.id === archived.id));
+});
+
+test("SCHOOLBOY list and nested programs preserve ownership and hide archived documents", async () => {
+  const doc = await document("DRAFT", schoolPortrait, foreignTarget);
+  await prisma.document.update({ where: { id: doc.id }, data: { fileKey: "private/schoolboy-test" } });
+  for (const path of ["/documents/me", "/target-programs/me", `/target-programs/${foreignTarget}`]) {
+    const response = await http(schoolboy, "get", path).expect(200);
+    assertNoInternalFields(response.body);
+  }
+  await prisma.document.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+  await http(schoolboy, "get", `/documents/${doc.id}`).expect(404);
+  const program = await http(schoolboy, "get", `/target-programs/${foreignTarget}`).expect(200);
+  assert(!program.body.documents.some((d: any) => d.id === doc.id));
+});
+
+test("requirements-status ignores archived documents and uses an active replacement", async () => {
+  const program = await prisma.targetProgram.findUniqueOrThrow({ where: { id: target } });
+  const requirement = await prisma.programRequirement.create({ data: { programId: program.programId!, type: "TRANSCRIPT", title: "Transcript" } });
+  const archived = await prisma.document.create({
+    data: {
+      studentPortraitId: portrait,
+      targetProgramId: target,
+      documentType: "TRANSCRIPT",
+      title: "Archived transcript",
+      fileUrl: "https://files.example.test/transcript",
+      fileKey: "private/transcript",
+      status: "APPROVED",
+      deletedAt: new Date(),
+    },
+  });
+  const absent = await http(student, "get", `/target-programs/${target}/requirements-status`).expect(200);
+  const absentRow = absent.body.find((r: any) => r.requirementId === requirement.id);
+  assert.equal(absentRow.isSubmitted, false);
+  assert.equal(absentRow.documentId, null);
+  const active = await prisma.document.create({
+    data: {
+      studentPortraitId: portrait,
+      targetProgramId: target,
+      documentType: "TRANSCRIPT",
+      title: "Active transcript",
+      fileUrl: "https://files.example.test/transcript-active",
+      fileKey: "private/transcript-active",
+    },
+  });
+  await prisma.document.update({ where: { id: archived.id }, data: { updatedAt: new Date(Date.now() + 10000) } });
+  for (const actor of [student, expert, admin]) {
+    const response = await http(actor, "get", `/target-programs/${target}/requirements-status`).expect(200);
+    const row = response.body.find((r: any) => r.requirementId === requirement.id);
+    assert.equal(row.documentId, active.id);
+    assert.equal(row.documentStatus, "DRAFT");
+    assertNoInternalFields(response.body);
+  }
+});
+
+test("program creation responses use safe nested serialization", async () => {
+  const program = await prisma.targetProgram.findUniqueOrThrow({ where: { id: target } });
+  for (const [actor, path] of [
+    [student, "/target-programs"],
+    [expert, `/expert/portraits/${portrait}/target-programs`],
+    [admin, `/expert/portraits/${portrait}/target-programs`],
+  ] as const) {
+    const response = await http(actor, "post", path).send({ programId: program.programId, intake: "Fall 2026" }).expect(201);
+    assert.deepEqual(response.body.documents, []);
+    assertNoInternalFields(response.body);
+  }
+});
+
+test("archive committed during replacement upload prevents stale write", async () => {
+  const doc = await document();
+  let archived: any;
+  uploadHook = async () => {
+    archived = await prisma.document.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+  };
+  try {
+    assert.equal((await multipart(student, undefined, `/documents/${doc.id}/new-version`, "patch")).status, 409);
+    assert.deepEqual(await prisma.document.findUniqueOrThrow({ where: { id: doc.id } }), archived);
+  } finally {
+    uploadHook = undefined;
+  }
+});
+
+test("archive committed before submit CAS prevents stale write", async () => {
+  const doc = await document();
+  const original = repo.updateStatus.bind(repo);
+  let archived: any;
+  repo.updateStatus = async (...args: any[]) => {
+    archived = await prisma.document.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+    return original(...args);
+  };
+  try {
+    await http(student, "patch", `/documents/${doc.id}/submit-for-review`).expect(409);
+    assert.deepEqual(await prisma.document.findUniqueOrThrow({ where: { id: doc.id } }), archived);
+  } finally {
+    repo.updateStatus = original;
+  }
+});
+
+test("archive committed after review snapshot yields conflict and no audit", async () => {
+  const doc = await document("REVIEW");
+  const original = access.assertPortrait.bind(access);
+  let archived: any;
+  access.assertPortrait = async (...args: any[]) => {
+    const result = await original(...args);
+    if (args[2] === "review") archived = await prisma.document.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+    return result;
+  };
+  try {
+    await http(expert, "patch", `/documents/${doc.id}/review`).send({ status: "APPROVED" }).expect(409);
+    assert.deepEqual(await prisma.document.findUniqueOrThrow({ where: { id: doc.id } }), archived);
+    assert.equal(await prisma.auditLog.count({ where: { entityType: "Document", entityId: doc.id } }), 0);
+  } finally {
+    access.assertPortrait = original;
+  }
+});

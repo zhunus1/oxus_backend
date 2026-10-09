@@ -16,7 +16,7 @@ try {
   try {
     const env = { ...process.env, DATABASE_URL: url.toString() };
     for (const args of [
-      ["node_modules/prisma/build/index.js", "db", "push"],
+      ["node_modules/prisma/build/index.js", "migrate", "deploy"],
       ["--import", "tsx", "--test", "--test-concurrency=1", "test/document-security-http.test.ts"],
     ]) {
       const result = spawnSync(process.execPath, args, { env, stdio: "inherit" });

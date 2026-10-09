@@ -8,6 +8,7 @@ import { DocumentStatus, Prisma } from "generated/prisma/client";
 import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
 import { PrismaService } from "src/database/prisma.service";
 import messages from "src/configs/messages";
+import { PUBLIC_DOCUMENT_SELECT, toPublicDocument } from "src/common/serialization/public-document";
 
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
@@ -44,7 +45,7 @@ export class DocumentService {
         title: dto.title,
         targetProgramId: dto.targetProgramId ?? null,
       });
-      return created;
+      return toPublicDocument(created);
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
       this.logger.error(`Error uploading document: ${error}`);
@@ -55,7 +56,7 @@ export class DocumentService {
   async findMyDocuments(userId: number, portraitId: number) {
     await this.access.assertPortrait(userId, portraitId, "self");
     try {
-      return await this.repo.findByPortraitId(portraitId);
+      return (await this.repo.findByPortraitId(portraitId)).map(document => toPublicDocument(document));
     } catch (error) {
       this.logger.error(`Error fetching documents: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR(this.entityName));
@@ -69,7 +70,7 @@ export class DocumentService {
         throw new NotFoundException(messages.NOT_FOUND_BY_ID(this.entityName, id));
       }
       await this.access.assertPortrait(userId, doc.studentPortraitId);
-      return doc;
+      return toPublicDocument(doc);
     } catch (error) {
       if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
       this.logger.error(`Error fetching document ${id}: ${error}`);
@@ -90,7 +91,7 @@ export class DocumentService {
 
       const fileUrl = await this.uploadService.uploadFile("documents", file);
       await this.access.assertPortrait(userId, portraitId, "self");
-      return await this.repo.updateVersion(doc, fileUrl);
+      return toPublicDocument(await this.repo.updateVersion(doc, fileUrl));
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") throw new ConflictException("Document changed; reload before retrying");
       if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) throw error;
@@ -113,7 +114,7 @@ export class DocumentService {
         throw new BadRequestException(messages.NOT_DRAFT(this.entityName));
       }
 
-      return await this.repo.updateStatus(doc, DocumentStatus.REVIEW);
+      return toPublicDocument(await this.repo.updateStatus(doc, DocumentStatus.REVIEW));
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") throw new ConflictException("Document changed; reload before retrying");
       if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) throw error;
@@ -129,13 +130,14 @@ export class DocumentService {
       }
       return await this.prisma.$transaction(
         async tx => {
-          const doc = await tx.document.findUnique({ where: { id } });
+          const doc = await tx.document.findUnique({ where: { id, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT });
           if (!doc) throw new NotFoundException(messages.NOT_FOUND_BY_ID(this.entityName, id));
           const portraitWhere = await this.access.assertPortrait(expertUserId, doc.studentPortraitId, "review", tx);
           if (doc.status !== DocumentStatus.REVIEW) throw new BadRequestException("Document is not in REVIEW status");
           const updated = await tx.document.update({
-            where: { id, status: DocumentStatus.REVIEW, version: doc.version, updatedAt: doc.updatedAt, fileUrl: doc.fileUrl, studentPortrait: portraitWhere },
+            where: { id, deletedAt: null, status: DocumentStatus.REVIEW, version: doc.version, updatedAt: doc.updatedAt, fileUrl: doc.fileUrl, studentPortrait: portraitWhere },
             data: { status: dto.status, feedback: dto.feedback ?? undefined },
+            select: PUBLIC_DOCUMENT_SELECT,
           });
           await this.auditLogService.log(
             expertUserId,
@@ -149,7 +151,7 @@ export class DocumentService {
             },
             tx,
           );
-          return updated;
+          return toPublicDocument(updated);
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       );

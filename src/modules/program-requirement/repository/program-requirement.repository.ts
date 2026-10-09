@@ -69,8 +69,9 @@ export class ProgramRequirementRepository {
 
   async findDocumentsForTargetProgram(targetProgramId: number, studentPortraitId: number) {
     return this.prisma.document.findMany({
-      where: { targetProgramId, studentPortraitId },
+      where: { targetProgramId, studentPortraitId, deletedAt: null },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true, title: true, status: true, documentType: true },
     });
   }
 }

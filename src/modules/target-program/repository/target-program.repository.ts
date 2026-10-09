@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { Prisma } from "generated/prisma/client";
+import { PUBLIC_DOCUMENT_SELECT } from "src/common/serialization/public-document";
 
 @Injectable()
 export class TargetProgramRepository extends BaseRepository {
@@ -10,7 +11,7 @@ export class TargetProgramRepository extends BaseRepository {
   } satisfies Prisma.TargetProgramInclude;
 
   private includeForPortrait(studentPortraitId: number) {
-    return { ...this.detailInclude, documents: { where: { studentPortraitId } } } satisfies Prisma.TargetProgramInclude;
+    return { ...this.detailInclude, documents: { where: { studentPortraitId, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT } } satisfies Prisma.TargetProgramInclude;
   }
 
   async findProgramById(id: number) {
