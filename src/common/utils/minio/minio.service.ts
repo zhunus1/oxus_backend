@@ -128,6 +128,11 @@ export class MinioService implements OnModuleInit {
     return this.bucketName;
   }
 
+  /** Reuse the configured transport; callers must implement their own bucket safety checks. */
+  getS3Client(): S3Client {
+    return this.s3Client;
+  }
+
   async deleteOldObjects(prefix: string, olderThanDays: number): Promise<void> {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
 

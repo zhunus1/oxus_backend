@@ -84,6 +84,11 @@ jobs:
       - name: Build application
         run: yarn build
 
+      - name: Private student document storage on disposable local MinIO
+        run: |
+          yarn lint:documents-storage-runner
+          yarn test:documents-storage
+
       - name: TypeScript
         run: yarn tsc --noEmit
 
