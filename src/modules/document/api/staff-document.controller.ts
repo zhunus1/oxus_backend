@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiParam, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { RequirementType } from "generated/prisma/client";
 import type { Response } from "express";
 import { JwtAuthGuard } from "src/modules/admin/auth/rbac/auth.guard";
@@ -23,6 +23,7 @@ const snapshot = {
 // Busboy emits size/parts limit at equality. One-byte/part sentinel permits the inclusive contract;
 // the existing validator still rejects any file >10 MiB, without a Put or another file copy.
 const staffMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES + 1 };
+const staffIdSchema = { type: "integer", minimum: 1, maximum: 2147483647 } as const;
 
 @ApiTags("Staff - Student Documents")
 @ApiBearerAuth()
@@ -36,6 +37,7 @@ const staffMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: S
 @Roles("ADMIN", "EXPERT")
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
 @Controller("expert/portraits/:portraitId/documents")
+@ApiParam({ name: "portraitId", schema: staffIdSchema })
 @UseInterceptors(StaffDocumentInputInterceptor)
 export class StaffDocumentController {
   constructor(private readonly documents: DocumentService) {}
@@ -61,6 +63,7 @@ export class StaffDocumentController {
   }
 
   @Get(":documentId")
+  @ApiParam({ name: "documentId", schema: staffIdSchema })
   @ApiOperation({ summary: "Read an active document within the selected StudentPortrait" })
   @ApiResponse({ status: 200, type: DocumentEntity })
   detail(@Req() req: UserRequest, @Param("portraitId", StaffDocumentIdPipe) portraitId: number, @Param("documentId", StaffDocumentIdPipe) id: number) {
@@ -93,6 +96,7 @@ export class StaffDocumentController {
   }
 
   @Get(":documentId/file")
+  @ApiParam({ name: "documentId", schema: staffIdSchema })
   @ApiOperation({ summary: "Stream an authorized private document; legacy returns 404" })
   @ApiProduces("application/pdf", "image/jpeg", "image/png")
   @ApiResponse({
@@ -111,6 +115,7 @@ export class StaffDocumentController {
   }
 
   @Patch(":documentId/new-version")
+  @ApiParam({ name: "documentId", schema: staffIdSchema })
   @StaffInput(StaffDocumentSnapshotDto)
   @ApiOperation({ summary: "Replace private bytes using strict snapshot CAS; preserve old object" })
   @UseGuards(StaffDocumentMutationGuard)
@@ -131,6 +136,7 @@ export class StaffDocumentController {
   }
 
   @Patch(":documentId")
+  @ApiParam({ name: "documentId", schema: staffIdSchema })
   @StaffInput(StaffUpdateDocumentDto)
   @ApiOperation({ summary: "Edit title only using strict snapshot CAS" })
   @ApiResponse({ status: 200, type: DocumentEntity })
@@ -144,6 +150,7 @@ export class StaffDocumentController {
   }
 
   @Delete(":documentId")
+  @ApiParam({ name: "documentId", schema: staffIdSchema })
   @StaffInput(StaffDocumentSnapshotDto)
   @ApiOperation({ summary: "Archive with CAS/audit; authorized repeat returns success without duplicate audit" })
   @ApiResponse({ status: 200, schema: { type: "object", required: ["deleted"], properties: { deleted: { type: "boolean", enum: [true] } } } })

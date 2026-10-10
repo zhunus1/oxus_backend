@@ -7,7 +7,7 @@ import { PageQueryDto } from "src/common/dto/page-query.dto";
 import type { DocumentSnapshot } from "../../repository/document-snapshot";
 
 export class StaffDocumentSnapshotDto implements DocumentSnapshot {
-  @ApiProperty({ minimum: 1, maximum: 2147483647 })
+  @ApiProperty({ type: "integer", minimum: 1, maximum: 2147483647 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -33,7 +33,7 @@ export class StaffCreateDocumentDto {
   @IsEnum(RequirementType)
   documentType: RequirementType;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 2147483647 })
+  @ApiPropertyOptional({ type: "integer", minimum: 1, maximum: 2147483647 })
   @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsInt()
@@ -60,7 +60,7 @@ export class StaffDocumentsQueryDto extends PageQueryDto {
   @ValidateIf((_object, value) => value !== undefined)
   @IsEnum(RequirementType)
   documentType?: RequirementType;
-  @ApiPropertyOptional({ minimum: 1, maximum: 2147483647 })
+  @ApiPropertyOptional({ type: "integer", minimum: 1, maximum: 2147483647 })
   @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsInt()
