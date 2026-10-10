@@ -100,6 +100,13 @@ describe("student document validation", () => {
     expect(() => validateStudentDocumentFile(file as Express.Multer.File)).toThrow(BadRequestException);
   });
 
+  it.each([1, 2])("rejects a structurally valid PDF MAX+%i without relying on multipart", extra => {
+    const buffer = Buffer.alloc(STUDENT_DOCUMENT_MAX_BYTES + extra, 32);
+    buffer.write("%PDF-1.7\n");
+    buffer.write("%%EOF", buffer.length - 5);
+    expect(() => validateStudentDocumentFile({ buffer, size: buffer.length, mimetype: "application/pdf" })).toThrow(BadRequestException);
+  });
+
   it("sanitizes errors reading a file buffer", () => {
     const file = {
       get buffer(): Buffer {

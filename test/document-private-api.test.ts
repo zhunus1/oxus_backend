@@ -15,7 +15,7 @@ import { Reflector } from "@nestjs/core";
 import { ConfigService } from "@nestjs/config";
 import { Logger, ValidationPipe, ServiceUnavailableException } from "@nestjs/common";
 import request from "supertest";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const database = new URL(process.env.DATABASE_URL ?? "");
 const endpoint = new URL(process.env.MINIO_TEST_ENDPOINT ?? "");
@@ -152,7 +152,7 @@ before(async () => {
     .compile();
   app = mod.createNestApplication();
   app.setGlobalPrefix("api/v1");
-  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }));
+  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidUnknownValues: false }));
   await app.listen(0, "127.0.0.1");
 });
 after(async () => {
@@ -231,6 +231,185 @@ for (const denial of ["no JWT", "foreign expert", "foreign student", "inactive e
       await db.user.update({ where: { id: student }, data: { deletedAt: null } });
     }
   });
+
+// Phase 5A: exercise actual multipart interception, DB transactions and real private storage.
+const maxBytes = 10 * 1024 * 1024;
+const sizedPdf = (size: number) => {
+  const buffer = Buffer.alloc(size, 0x20);
+  buffer.write("%PDF-1.7\n");
+  buffer.write("\n%%EOF\n", size - 7);
+  return buffer;
+};
+const mutationSnapshot = async () => ({
+  documents: await db.document.findMany({ orderBy: { id: "asc" } }),
+  auditsAndIntents: await db.auditLog.findMany({ orderBy: { id: "asc" } }),
+  storageCalls,
+});
+
+for (const route of ["create", "version"] as const) {
+  const setup = async () => {
+    const doc = route === "version" ? await createPrivate() : undefined;
+    const path = doc ? `/documents/${doc.id}/new-version` : "/documents";
+    const method = doc ? "patch" : "post";
+    const req = (actor = student) => {
+      const result = http(actor, method, path);
+      return doc ? result : result.field("title", "Boundary PDF").field("documentType", "PASSPORT");
+    };
+    return { doc, path, method, req };
+  };
+  for (const delta of [-1, 0, 1, 2])
+    test(`Phase 5A student ${route} MAX${delta < 0 ? delta : `+${delta}`} inclusive HTTP boundary`, async () => {
+      const { doc, req } = await setup();
+      const oldKey = doc ? (await row(doc.id)).fileKey : undefined;
+      const buffer = sizedPdf(maxBytes + delta);
+      const before = await mutationSnapshot();
+      const response = await req().attach("file", buffer, { filename: "boundary.pdf", contentType: "application/pdf" });
+      if (delta > 0) {
+        assert.equal(response.status, 413);
+        assert.deepEqual(await mutationSnapshot(), before); // includes every intent, audit, row and SDK call (including Delete).
+      } else {
+        assert.equal(response.status, doc ? 200 : 201);
+        assert.deepEqual(Object.keys(response.body).sort(), publicFields);
+        const saved = await row(response.body.id);
+        assert.equal(saved.version, doc ? doc.version + 1 : 1);
+        assert.deepEqual((await binary(http(student, "get", `/documents/${saved.id}/file`)).expect(200)).body, buffer);
+        if (oldKey) {
+          const old = await originalSend(new GetObjectCommand({ Bucket: `${config.AWS_BUCKET_NAME}-student-documents`, Key: oldKey }));
+          assert.deepEqual(Buffer.from(await old.Body.transformToByteArray()), fixture());
+        }
+        const after = await mutationSnapshot();
+        assert.equal(after.documents.length, before.documents.length + (doc ? 0 : 1));
+        assert.equal(after.auditsAndIntents.length, before.auditsAndIntents.length + 2);
+        const intent = await latestIntent();
+        assert.equal(intent.details.state, "COMMITTED");
+        assert.equal(intent.details.documentId, saved.id);
+      }
+    });
+
+  for (const invalid of ["empty", "corrupt PDF", "corrupt JPEG", "corrupt PNG", "MIME mismatch", "multiple files", "extra file field"])
+    test(`Phase 5A student ${route} rejects ${invalid} without DB or SDK mutation`, async () => {
+      const { req } = await setup();
+      const before = await mutationSnapshot();
+      const contentType = invalid === "corrupt JPEG" ? "image/jpeg" : invalid === "corrupt PNG" || invalid === "MIME mismatch" ? "image/png" : "application/pdf";
+      const buffer = invalid === "empty" ? Buffer.alloc(0) : invalid.startsWith("corrupt") ? Buffer.from("invalid content") : fixture();
+      const upload = req().attach("file", buffer, { filename: "invalid.bin", contentType });
+      if (invalid === "multiple files") upload.attach("file", fixture(), "second.pdf");
+      if (invalid === "extra file field") upload.attach("otherFile", fixture(), "second.pdf");
+      await upload.expect(400);
+      assert.deepEqual(await mutationSnapshot(), before);
+    });
+
+  for (const fields of ["extra", "duplicate"])
+    test(`Phase 5A student ${route} ${fields} fields cannot bypass oversized validation`, async () => {
+      const { req } = await setup();
+      const before = await mutationSnapshot();
+      const upload = req().field("ignored", "one");
+      if (fields === "duplicate") upload.field("ignored", "two");
+      await upload.attach("file", sizedPdf(maxBytes + 1), "oversized.pdf").expect(413);
+      assert.deepEqual(await mutationSnapshot(), before);
+    });
+
+  test(`Phase 5A student ${route} field size bound rejects before storage`, async () => {
+    const { req } = await setup();
+    const before = await mutationSnapshot();
+    await req()
+      .field("ignored", "x".repeat(1024 * 1024 + 1))
+      .attach("file", fixture(), "small.pdf")
+      .expect(400);
+    assert.deepEqual(await mutationSnapshot(), before);
+  });
+
+  test(`Phase 5A student ${route} no JWT preserves 401 without DB or SDK mutation`, async () => {
+    const { path, method } = await setup();
+    const before = await mutationSnapshot();
+    await request(app.getHttpServer())[method](`/api/v1${path}`).attach("file", fixture(), "small.pdf").expect(401);
+    assert.deepEqual(await mutationSnapshot(), before);
+  });
+}
+
+for (const field of ["title", "documentType", "targetProgramId"])
+  test(`Phase 5A student create rejects duplicate ${field} field without mutation`, async () => {
+    const before = await mutationSnapshot();
+    const req = http(student, "post", "/documents").field("title", "One").field("documentType", "PASSPORT");
+    if (field === "targetProgramId") req.field(field, String(target));
+    req.field(field, field === "targetProgramId" ? String(target) : "Two");
+    await req.attach("file", fixture(), "small.pdf").expect(400);
+    assert.deepEqual(await mutationSnapshot(), before);
+  });
+
+test("Phase 5A foreign student cannot replace exact-MAX document or use foreign target", async () => {
+  const doc = await createPrivate();
+  const before = await mutationSnapshot();
+  await http(foreignStudent, "patch", `/documents/${doc.id}/new-version`).attach("file", sizedPdf(maxBytes), "max.pdf").expect(403);
+  await http(foreignStudent, "post", "/documents")
+    .field("title", "Foreign")
+    .field("documentType", "PASSPORT")
+    .field("targetProgramId", String(target))
+    .attach("file", sizedPdf(maxBytes), "max.pdf")
+    .expect(403);
+  assert.deepEqual(await mutationSnapshot(), before);
+});
+
+test("Phase 5A create preserves whitelist and all three text fields at exact MAX", async () => {
+  const buffer = sizedPdf(maxBytes);
+  const response = await http(student, "post", "/documents")
+    .field("title", "All fields")
+    .field("documentType", "PASSPORT")
+    .field("targetProgramId", String(target))
+    .field("ignored", "one")
+    .field("ignored", "two")
+    .attach("file", buffer, "max.pdf")
+    .expect(201);
+  assert.equal(response.body.targetProgramId, target);
+  assert(!("ignored" in response.body));
+  assert.deepEqual((await binary(http(student, "get", `/documents/${response.body.id}/file`)).expect(200)).body, buffer);
+});
+
+test("Phase 5A version preserves ignored text-field compatibility and inclusive MAX", async () => {
+  const doc = await createPrivate();
+  const buffer = sizedPdf(maxBytes);
+  const result = await http(student, "patch", `/documents/${doc.id}/new-version`).field("ignored", "one").field("ignored", "two").attach("file", buffer, "max.pdf").expect(200);
+  assert.deepEqual((await binary(http(student, "get", `/documents/${result.body.id}/file`)).expect(200)).body, buffer);
+});
+
+test("Phase 5A four concurrent exact-MAX student uploads preserve bytes and measure aggregate memory", async () => {
+  const buffer = sizedPdf(maxBytes);
+  const samples: ReturnType<typeof process.memoryUsage>[] = [];
+  const baseline = process.memoryUsage();
+  const started = performance.now();
+  const timer = setInterval(() => samples.push(process.memoryUsage()), 10);
+  timer.unref();
+  let responses: any[];
+  try {
+    responses = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        http(student, "post", "/documents").field("title", "Concurrent boundary").field("documentType", "PASSPORT").attach("file", buffer, "max.pdf"),
+      ),
+    );
+    const uploadDurationMs = performance.now() - started;
+    samples.push(process.memoryUsage());
+    assert(responses.every(r => r.status === 201));
+    assert.equal(new Set(responses.map(r => r.body.id)).size, 4);
+    const peakSampled = Object.fromEntries(["rss", "heapUsed", "external", "arrayBuffers"].map(key => [key, Math.max(baseline[key], ...samples.map(s => s[key]))]));
+    console.log(
+      "STUDENT_UPLOAD_BENCHMARK " +
+        JSON.stringify({
+          concurrency: 4,
+          bytesPerFile: buffer.length,
+          savedFiles: responses.length,
+          uploadDurationMs,
+          baseline,
+          peakSampled,
+          sampleCount: samples.length,
+          mode: "bounded-buffer-upload",
+          measurementProcess: "HTTP client+Nest server+Prisma+SDK in one process; not isolated production memory",
+        }),
+    );
+  } finally {
+    clearInterval(timer);
+  }
+  for (const response of responses!) assert.deepEqual((await binary(http(student, "get", `/documents/${response.body.id}/file`)).expect(200)).body, buffer);
+});
 
 for (const invalid of ["missing", "empty", "multiple", "oversized", "MIME mismatch", "magic mismatch", "foreign program"])
   test(`HTTP rejects ${invalid} before storage`, async () => {

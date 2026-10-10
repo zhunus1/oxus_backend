@@ -10,11 +10,14 @@ import { DocumentService } from "../service/document.service";
 import { CreateDocumentDto } from "./dto/create-document.dto";
 import { ReviewDocumentDto } from "./dto/review-document.dto";
 import { StudentPortraitService } from "src/modules/studentportrait/service/studentportrait.service";
-import { STUDENT_DOCUMENT_MULTIPART_LIMITS } from "src/common/utils/minio/student-document-file";
+import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES } from "src/common/utils/minio/student-document-file";
 import { DocumentMutationGuard } from "./document-mutation.guard";
 import type { Response } from "express";
 import { streamDocumentResponse } from "./document-stream-response";
 import { RequirementType } from "generated/prisma/client";
+
+// Busboy emits its file limit at equality; the validator still enforces the inclusive 10 MiB bound.
+const studentMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES + 1 };
 
 const uploadBody = {
   schema: {
@@ -56,7 +59,7 @@ export class DocumentController {
   @ApiResponse({ status: 409, description: "Document access changed concurrently; reload before uploading" })
   @ApiResponse({ status: 403, description: "Document upload access denied" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: STUDENT_DOCUMENT_MULTIPART_LIMITS }))
+  @UseInterceptors(FileInterceptor("file", { limits: studentMultipartLimits }))
   @Post()
   async upload(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateDocumentDto) {
     const portraitId = await this.getPortraitId(req.user.id);
@@ -110,7 +113,7 @@ export class DocumentController {
   @ApiResponse({ status: 403, description: "Document replacement access denied" })
   @ApiResponse({ status: 409, description: "Document changed concurrently; reload before replacing" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: STUDENT_DOCUMENT_MULTIPART_LIMITS }))
+  @UseInterceptors(FileInterceptor("file", { limits: studentMultipartLimits }))
   @Patch(":id/new-version")
   async newVersion(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     const portraitId = await this.getPortraitId(req.user.id);

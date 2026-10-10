@@ -961,6 +961,31 @@ test("staff Swagger advertises exactly seven routes, strict DTOs and safe binary
     assert.equal((doc.paths[root + "/{documentId}/file"] as any).get.responses["200"].content[mime].schema.format, "binary");
 });
 
+// Compatibility matrix: student sentinel remediation must preserve both staff upload paths.
+for (const route of ["create", "version"])
+  for (const delta of [-1, 0, 1, 2])
+    test(`Phase 5A staff ${route} MAX${delta < 0 ? delta : `+${delta}`} boundary compatibility`, async () => {
+      const doc = route === "version" ? await create() : undefined;
+      const before = { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes };
+      const buffer = Buffer.alloc(10 * 1024 * 1024 + delta, 0x20);
+      buffer.write("%PDF-1.7\n");
+      buffer.write("\n%%EOF\n", buffer.length - 7);
+      const req = doc
+        ? http(expert, "patch", `${base()}/${doc.id}/new-version`).field("expectedVersion", String(doc.version)).field("expectedUpdatedAt", doc.updatedAt)
+        : http(expert, "post", base()).field("title", "Boundary").field("documentType", "OTHER").field("targetProgramId", String(target));
+      const response = await req.attach("file", buffer, "boundary.pdf");
+      if (delta > 0) {
+        assert.equal(response.status, 413);
+        assert.deepEqual(
+          { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes },
+          before,
+        );
+      } else {
+        assert.equal(response.status, doc ? 200 : 201);
+        assert.deepEqual((await binary(http(expert, "get", `${base()}/${response.body.id}/file`)).expect(200)).body, buffer);
+      }
+    });
+
 for (const invalid of ["missing", "empty", "oversized", "multiple", "magic mismatch", "MIME mismatch", "foreign target"])
   test(`staff upload rejects ${invalid} before any storage request`, async () => {
     const beforeCalls = calls;
