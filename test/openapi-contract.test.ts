@@ -257,6 +257,14 @@ test("R05 prepare/signature/confirm/detail document drafts, nullable contract an
   assert.ok(schema("/contracts/{id}/confirm-manual", "post", "201").properties.manualConfirmedAt);
   assert.ok(schema("/contracts/{id}/confirm-manual", "post", "409").properties.code.enum.includes("HISTORICAL_BENEFITS_REVIEW_REQUIRED"));
 });
+test("manual contract writers advertise a maximum of three total payments", () => {
+  for (const name of ["CreateContractForStudentDto", "UpdateContractMetaDto", "PrepareLeadContractDto", "ContractSchedulePreviewDto"]) {
+    const count = doc.components.schemas[name].properties.installmentCount;
+    assert.equal(count.minimum, 1);
+    assert.equal(count.maximum, 3);
+    assert.match(count.description, /including the first receipt/);
+  }
+});
 test("R05 analytics describes event/storage times, event types and nullable durations", () => {
   const event = schema("/admin/analytics/events").properties.data.items.properties;
   assert.equal(event.occurredAt.format, "date-time");

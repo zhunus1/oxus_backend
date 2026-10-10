@@ -244,9 +244,84 @@ test("Cambridge price and schedule validation", async () => {
   const result = await http(expert, "post", `${f.path}/confirm`).send({ signedAt, paidAt, amount: 750000 }).expect(201);
   assert.equal(result.body.contract.price, 750000);
   const preview = await http(expert, "post", "/contracts/payment-schedule/preview")
-    .send({ price: 750000, currency: "KZT", paymentType: "INSTALLMENT", installmentCount: 7, firstPaidAt: paidAt })
+    .send({ price: 750000, currency: "KZT", paymentType: "INSTALLMENT", installmentCount: 3, firstPaidAt: paidAt })
     .expect(201);
-  assert.equal(preview.body.installments.length, 7);
+  assert.equal(preview.body.installments.length, 3);
+});
+
+test("all plan writers reject four or more installments without changing existing terms", async () => {
+  const f = await prepare({ paymentType: "INSTALLMENT", installmentCount: 3 });
+  const existing = await user("STUDENT");
+  const owner = await prisma.consultantProfile.findUniqueOrThrow({ where: { userId: expert } });
+  await prisma.studentPortrait.create({ data: { userId: existing.id, consultantProfileId: owner.id } });
+  const direct = { studentId: existing.id, subscriptionTier: "EXPERT_MENTORSHIP", price: 1500000, currency: "KZT", paymentType: "INSTALLMENT", installmentCount: 3 };
+  const created = await http(expert, "post", "/contracts").send(direct).expect(201);
+  const draft = await prisma.leadContractDraft.findUniqueOrThrow({ where: { leadId: f.lead.id } });
+  for (const installmentCount of [4, 7, 120, 121]) {
+    await http(expert, "post", "/contracts/payment-schedule/preview")
+      .send({ price: 1500000, currency: "KZT", paymentType: "INSTALLMENT", installmentCount, firstPaidAt: paidAt })
+      .expect(400);
+    await http(expert, "post", f.path)
+      .send({ ...f.dto, installmentCount })
+      .expect(400);
+    await http(expert, "patch", f.path)
+      .send({ ...f.dto, installmentCount })
+      .expect(400);
+    await http(expert, "post", "/contracts")
+      .send({ ...direct, installmentCount })
+      .expect(400);
+    await http(expert, "patch", `/contracts/${created.body.id}/meta`).send({ installmentCount }).expect(400);
+    // Direct repository calls must enforce the limit even with historical amount compatibility.
+    await assert.rejects(repo.updateMeta(created.body.id, { paymentType: "INSTALLMENT", installmentCount }, expert), /count from 2 to 3/);
+  }
+  assert.deepEqual((await prisma.leadContractDraft.findUniqueOrThrow({ where: { leadId: f.lead.id } })).data, draft.data);
+  assert.equal((await prisma.contract.findUniqueOrThrow({ where: { id: created.body.id } })).installmentCount, 3);
+});
+
+test("existing signed four-tranche plans keep their schedule and accept the last receipt", async () => {
+  const existing = await user("STUDENT");
+  const owner = await prisma.consultantProfile.findUniqueOrThrow({ where: { userId: expert } });
+  await prisma.studentPortrait.create({ data: { userId: existing.id, consultantProfileId: owner.id } });
+  const c = await prisma.contract.create({
+    data: {
+      studentId: existing.id,
+      contractNumber: randomUUID(),
+      price: 1500000,
+      currency: "KZT",
+      subscriptionTier: "EXPERT_MENTORSHIP",
+      status: "SIGNED",
+      paymentType: "INSTALLMENT",
+      installmentCount: 4,
+      manualConfirmedAt: new Date(paidAt),
+      studentSignedAt: new Date(signedAt),
+      expertSignedAt: new Date(signedAt),
+      signedByUserId: expert,
+    },
+  });
+  const dates = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"];
+  for (const [index, date] of dates.entries())
+    await prisma.contractInstallment.create({
+      data: {
+        contractId: c.id,
+        number: index + 1,
+        amount: 375000,
+        dueDate: new Date(`${date}T00:00:00Z`),
+        ...(index < 3 ? { paidAt: new Date(`${date}T10:00:00Z`), confirmedAt: new Date(`${date}T10:00:00Z`), confirmedByUserId: expert } : {}),
+      },
+    });
+  const before = await prisma.contractInstallment.findMany({ where: { contractId: c.id }, orderBy: { number: "asc" } });
+  const read = await http(expert, "get", `/contracts/student/${existing.id}`).expect(200);
+  assert.equal(read.body.installmentCount, 4);
+  const repeated = await http(expert, "post", `/contracts/${c.id}/confirm-manual`).send({ paidAt, signedAt, amount: 375000 }).expect(201);
+  assert.equal(repeated.body.installmentCount, 4);
+  assert.equal(repeated.body.installments.length, 4);
+  const result = await http(expert, "post", `/contracts/${c.id}/installments/4/confirm`).send({ paidAt: "2026-04-30T10:00:00Z", amount: 375000 }).expect(201);
+  assert.equal(result.body.status, "PAID");
+  assert.equal(result.body.installmentCount, 4);
+  assert.deepEqual(
+    result.body.installments.map((i: any) => ({ id: i.id, number: i.number, amount: i.amount, dueDate: i.dueDate })),
+    before.map(i => ({ id: i.id, number: i.number, amount: i.amount.toString(), dueDate: i.dueDate.toISOString() })),
+  );
 });
 
 test("account reuse needs explicit approval at confirmation and preserves credentials", async () => {

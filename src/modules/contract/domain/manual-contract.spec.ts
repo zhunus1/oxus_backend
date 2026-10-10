@@ -52,6 +52,19 @@ describe("manual contract payment schedule", () => {
     for (const price of [750000, 1500000]) expect(paymentTerms(price, "KZT")).toEqual({ paymentType: "FULL", installmentCount: 1 });
   });
 
+  it.each([2, 3])("accepts %i total installments for a new plan", count => {
+    expect(paymentTerms(1500000, "KZT", "INSTALLMENT", count)).toEqual({ paymentType: "INSTALLMENT", installmentCount: count });
+  });
+
+  it.each([4, 7, 120, 121])("rejects %i installments even when editing historical amounts", count => {
+    for (const legacy of [false, true]) expect(() => commercialTerms(1500000, "KZT", "EXPERT_MENTORSHIP", "INSTALLMENT", count, legacy)).toThrow();
+  });
+
+  it.each([4, 7, 120])("preserves %i installments only for unchanged historical terms", count => {
+    expect(commercialTerms(499, "USD", "EXPERT_MENTORSHIP", "INSTALLMENT", count, true, true)).toEqual({ paymentType: "INSTALLMENT", installmentCount: count });
+    expect(() => paymentTerms(1500000, "KZT", "INSTALLMENT", count, false, true)).toThrow();
+  });
+
   it("preserves historical currency and amount only when explicitly handling existing terms", () => {
     expect(() => paymentTerms(499, "USD", "INSTALLMENT", 2)).toThrow();
     expect(paymentTerms(499, "USD", "INSTALLMENT", 2, true)).toEqual({ paymentType: "INSTALLMENT", installmentCount: 2 });
