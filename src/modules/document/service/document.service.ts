@@ -8,13 +8,16 @@ import { DocumentStorageRecoveryService, type DocumentStorageIntent } from "./do
 import { randomUUID } from "node:crypto";
 import { AuditLogService } from "src/modules/audit-log/service/audit-log.service";
 import { DocumentStatus, Prisma } from "generated/prisma/client";
-import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
+import { StudentDocumentAccessService, type StudentDocumentOperation } from "src/common/authorization/student-document-access.service";
 import { PrismaService } from "src/database/prisma.service";
 import messages from "src/configs/messages";
 import { PUBLIC_DOCUMENT_SELECT, toPublicDocument, type PublicDocument } from "src/common/serialization/public-document";
 
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
+import { assertDocumentSnapshot, nextDocumentTimestamp } from "../repository/document-snapshot";
+import { StaffCreateDocumentDto, StaffDocumentsQueryDto, StaffDocumentSnapshotDto, StaffUpdateDocumentDto, staffDocumentId, validateStaffDto } from "../api/dto/staff-document.dto";
+import { pageBounds } from "src/common/dto/page-query.dto";
 
 @Injectable()
 export class DocumentService {
@@ -72,6 +75,7 @@ export class DocumentService {
       fromVersion: number;
     },
     write: (tx: Prisma.TransactionClient, fileKey: string) => Promise<PublicDocument>,
+    operation: StudentDocumentOperation = "self",
   ) {
     const portrait = await this.prisma.studentPortrait.findUniqueOrThrow({ where: { id: portraitId }, select: { userId: true, consultantProfileId: true } });
     const actor = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { roleId: true } });
@@ -96,7 +100,7 @@ export class DocumentService {
       return await this.prisma.$transaction(
         async tx => {
           try {
-            await this.access.lockMutation(userId, portraitId, tx, change.targetProgramId);
+            await this.access.lockMutation(userId, portraitId, tx, change.targetProgramId, operation);
             const currentPortrait = await tx.studentPortrait.findUniqueOrThrow({ where: { id: portraitId }, select: { userId: true, consultantProfileId: true } });
             const currentActor = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { roleId: true } });
             if (currentPortrait.userId !== portrait.userId || currentPortrait.consultantProfileId !== portrait.consultantProfileId || currentActor.roleId !== actor.roleId)
@@ -145,6 +149,144 @@ export class DocumentService {
     await this.access.assertPortrait(userId, doc.studentPortraitId);
     if (doc.fileKey === null) throw new NotFoundException("Legacy document has no private download; use its existing fileUrl");
     return this.storage.streamPrivateDocument(doc.fileKey, signal);
+  }
+
+  async assertStaffPortrait(actorId: number, portraitId: number, tx?: Prisma.TransactionClient) {
+    await this.access.assertPortrait(staffDocumentId(actorId), staffDocumentId(portraitId), "staff-mutate", tx);
+  }
+
+  private async staffOperation<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2025", "P2034"].includes(error.code)) throw new ConflictException("Document changed; reload before retrying");
+      if (error instanceof HttpException) throw error;
+      this.logger.error("Staff document operation failed");
+      throw new InternalServerErrorException("Document operation failed");
+    }
+  }
+
+  async staffList(actorId: number, portraitId: number, input: StaffDocumentsQueryDto) {
+    const query = validateStaffDto(StaffDocumentsQueryDto, input);
+    const { page, limit, skip } = pageBounds(query);
+    if (skip > 100_000) throw new BadRequestException("Document page offset exceeds 100000");
+    return this.staffOperation(() =>
+      this.prisma.$transaction(
+        async tx => {
+          await this.assertStaffPortrait(actorId, portraitId, tx);
+          if (query.targetProgramId !== undefined) await this.access.assertOwnTargetProgram(query.targetProgramId, portraitId, tx);
+          const where = { studentPortraitId: portraitId, deletedAt: null, status: query.status, documentType: query.documentType, targetProgramId: query.targetProgramId };
+          const result = await this.repo.listForPortrait(where, skip, limit, tx);
+          return { ...result, page, totalPages: Math.max(1, Math.ceil(result.total / limit)) };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 5_000, timeout: 5_000 },
+      ),
+    );
+  }
+
+  async staffDetail(actorId: number, portraitId: number, id: number) {
+    staffDocumentId(id);
+    return this.staffOperation(async () => {
+      await this.assertStaffPortrait(actorId, portraitId);
+      const doc = await this.repo.findForPortrait(id, portraitId);
+      if (!doc) throw new NotFoundException("Document not found");
+      return toPublicDocument(doc);
+    });
+  }
+
+  async staffDownload(actorId: number, portraitId: number, id: number, signal?: AbortSignal) {
+    staffDocumentId(id);
+    return this.staffOperation(async () => {
+      await this.assertStaffPortrait(actorId, portraitId);
+      const doc = await this.repo.findForPortrait(id, portraitId);
+      if (!doc) throw new NotFoundException("Document not found");
+      if (doc.fileKey === null) throw new NotFoundException("Legacy document has no private download; use its existing fileUrl");
+      return this.storage.streamPrivateDocument(doc.fileKey, signal);
+    });
+  }
+
+  async staffUpload(actorId: number, portraitId: number, file: Express.Multer.File, input: StaffCreateDocumentDto) {
+    const dto = validateStaffDto(StaffCreateDocumentDto, input);
+    return this.staffOperation(async () => {
+      await this.assertStaffPortrait(actorId, portraitId);
+      if (dto.targetProgramId !== undefined) await this.access.assertOwnTargetProgram(dto.targetProgramId, portraitId);
+      validateStudentDocumentFile(file);
+      return this.persistPrivateFile(
+        actorId,
+        portraitId,
+        file,
+        { targetProgramId: dto.targetProgramId, documentId: null, action: "DOCUMENT_CREATED", fromStatus: null, fromVersion: 0 },
+        (tx, fileKey) =>
+          this.repo.createPrivate({ title: dto.title, documentType: dto.documentType, targetProgramId: dto.targetProgramId, studentPortraitId: portraitId, fileKey }, tx),
+        "staff-mutate",
+      );
+    });
+  }
+
+  async staffNewVersion(actorId: number, portraitId: number, id: number, file: Express.Multer.File, input: StaffDocumentSnapshotDto) {
+    staffDocumentId(id);
+    const snapshot = validateStaffDto(StaffDocumentSnapshotDto, input);
+    return this.staffOperation(async () => {
+      await this.assertStaffPortrait(actorId, portraitId);
+      const doc = await this.repo.findForPortrait(id, portraitId);
+      if (!doc) throw new NotFoundException("Document not found");
+      assertDocumentSnapshot(doc, snapshot);
+      if (doc.targetProgramId !== null) await this.access.assertOwnTargetProgram(doc.targetProgramId, portraitId);
+      validateStudentDocumentFile(file);
+      return this.persistPrivateFile(
+        actorId,
+        portraitId,
+        file,
+        { targetProgramId: doc.targetProgramId, documentId: id, action: "DOCUMENT_VERSION_UPLOADED", fromStatus: doc.status, fromVersion: doc.version },
+        (tx, fileKey) => this.repo.updatePrivateVersion(doc, fileKey, tx),
+        "staff-mutate",
+      );
+    });
+  }
+
+  private async staffMetadataMutation(actorId: number, portraitId: number, id: number, snapshot: StaffDocumentSnapshotDto, title?: string) {
+    staffDocumentId(id);
+    return this.staffOperation(() =>
+      this.prisma.$transaction(
+        async tx => {
+          await this.access.lockMutation(staffDocumentId(actorId), staffDocumentId(portraitId), tx, undefined, "staff-mutate");
+          const doc = await this.repo.findForPortrait(id, portraitId, tx, title === undefined);
+          if (!doc) throw new NotFoundException("Document not found");
+          if (title === undefined && doc.deletedAt !== null) return { deleted: true as const };
+          assertDocumentSnapshot(doc, snapshot);
+          const updated = await this.repo.updateStaffDocument(doc, title === undefined ? { deletedAt: new Date() } : { title }, tx);
+          const portrait = await tx.studentPortrait.findUniqueOrThrow({ where: { id: portraitId }, select: { userId: true } });
+          await this.auditLogService.log(
+            actorId,
+            title === undefined ? "DOCUMENT_DELETED" : "DOCUMENT_METADATA_UPDATED",
+            "Document",
+            id,
+            {
+              studentPortraitId: portraitId,
+              ownerUserId: portrait.userId,
+              documentId: id,
+              fromVersion: doc.version,
+              toVersion: updated.version,
+              fromStatus: doc.status,
+              toStatus: updated.status,
+              ...(title === undefined ? {} : { fromTitle: doc.title, toTitle: updated.title }),
+            },
+            tx,
+          );
+          return title === undefined ? { deleted: true as const } : toPublicDocument(updated);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, maxWait: 5_000, timeout: 5_000 },
+      ),
+    );
+  }
+
+  async staffUpdateMetadata(actorId: number, portraitId: number, id: number, input: StaffUpdateDocumentDto) {
+    const dto = validateStaffDto(StaffUpdateDocumentDto, input);
+    return this.staffMetadataMutation(actorId, portraitId, id, dto, dto.title);
+  }
+
+  async staffDelete(actorId: number, portraitId: number, id: number, input: StaffDocumentSnapshotDto) {
+    return this.staffMetadataMutation(actorId, portraitId, id, validateStaffDto(StaffDocumentSnapshotDto, input));
   }
 
   async findMyDocuments(userId: number, portraitId: number) {
@@ -231,11 +373,12 @@ export class DocumentService {
         async tx => {
           const doc = await tx.document.findUnique({ where: { id, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT });
           if (!doc) throw new NotFoundException(messages.NOT_FOUND_BY_ID(this.entityName, id));
+          await this.access.lockMutation(expertUserId, doc.studentPortraitId, tx, undefined, "review");
           const portraitWhere = await this.access.assertPortrait(expertUserId, doc.studentPortraitId, "review", tx);
           if (doc.status !== DocumentStatus.REVIEW) throw new BadRequestException("Document is not in REVIEW status");
           const updated = await tx.document.update({
             where: { id, deletedAt: null, status: DocumentStatus.REVIEW, version: doc.version, updatedAt: doc.updatedAt, fileUrl: doc.fileUrl, studentPortrait: portraitWhere },
-            data: { status: dto.status, feedback: dto.feedback ?? undefined },
+            data: { status: dto.status, feedback: dto.feedback ?? undefined, updatedAt: nextDocumentTimestamp(doc.updatedAt) },
             select: PUBLIC_DOCUMENT_SELECT,
           });
           await this.auditLogService.log(

@@ -106,11 +106,16 @@ try {
         await withCleanup(
           async () => {
             await admin.connect();
-            await withDisposableDatabase(admin, database, "oxus_private_document", async url => {
-              const childEnv = { ...env, DATABASE_URL: url };
-              await command(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: childEnv, isTest: true });
-              await command(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=1", "test/document-private-api.test.ts"], { env: childEnv, isTest: true });
-            });
+            for (const [prefix, suite] of [
+              ["oxus_private_document", "test/document-private-api.test.ts"],
+              ["oxus_staff_document", "test/document-staff-api.test.ts"],
+            ]) {
+              await withDisposableDatabase(admin, database, prefix, async url => {
+                const childEnv = { ...env, DATABASE_URL: url };
+                await command(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: childEnv, isTest: true });
+                await command(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=1", suite], { env: childEnv, isTest: true });
+              });
+            }
           },
           () => admin.end(),
         );

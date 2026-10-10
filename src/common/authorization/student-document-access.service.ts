@@ -2,7 +2,7 @@ import { ForbiddenException, Injectable } from "@nestjs/common";
 import { Prisma } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
 
-export type StudentDocumentOperation = "read" | "staff-read" | "review" | "self";
+export type StudentDocumentOperation = "read" | "staff-read" | "staff-mutate" | "review" | "self";
 
 @Injectable()
 export class StudentDocumentAccessService {
@@ -39,12 +39,13 @@ export class StudentDocumentAccessService {
   }
 
   /** Short READ COMMITTED mutations serialize with ordinary role/block/transfer UPDATE writers. */
-  async lockMutation(actorId: number, portraitId: number, tx: Prisma.TransactionClient, targetProgramId?: number | null) {
+  async lockMutation(actorId: number, portraitId: number, tx: Prisma.TransactionClient, targetProgramId?: number | null, operation: StudentDocumentOperation = "self") {
     await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${actorId} FOR SHARE`;
     await tx.$queryRaw`SELECT r.id FROM "Role" r JOIN "User" u ON u."roleId" = r.id WHERE u.id = ${actorId} FOR SHARE OF r`;
     await tx.$queryRaw`SELECT id FROM "StudentPortrait" WHERE id = ${portraitId} FOR SHARE`;
+    if (operation !== "self") await tx.$queryRaw`SELECT id FROM "ConsultantProfile" WHERE "userId" = ${actorId} FOR SHARE`;
     if (targetProgramId != null) await tx.$queryRaw`SELECT id FROM "TargetProgram" WHERE id = ${targetProgramId} FOR SHARE`;
-    await this.assertPortrait(actorId, portraitId, "self", tx);
+    await this.assertPortrait(actorId, portraitId, operation, tx);
     if (targetProgramId != null) await this.assertOwnTargetProgram(targetProgramId, portraitId, tx);
   }
 }

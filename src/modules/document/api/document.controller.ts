@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, Res, ServiceUnavailableException, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
 import type { ApiBodyOptions } from "@nestjs/swagger";
@@ -13,7 +13,7 @@ import { StudentPortraitService } from "src/modules/studentportrait/service/stud
 import { STUDENT_DOCUMENT_MULTIPART_LIMITS } from "src/common/utils/minio/student-document-file";
 import { DocumentMutationGuard } from "./document-mutation.guard";
 import type { Response } from "express";
-import type { Readable } from "node:stream";
+import { streamDocumentResponse } from "./document-stream-response";
 import { RequirementType } from "generated/prisma/client";
 
 const uploadBody = {
@@ -92,60 +92,7 @@ export class DocumentController {
   @ApiResponse({ status: 403, description: "Document ownership or active expert assignment required" })
   @Get(":id/file")
   async download(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Res() res: Response) {
-    const abort = new AbortController();
-    let stream: Readable | undefined;
-    const cleanup = () => {
-      clearTimeout(deadline);
-      abort.abort();
-      stream?.destroy();
-      req.off("aborted", cleanup);
-      res.off("close", cleanup);
-      res.off("finish", cleanup);
-    };
-    const fail = () => {
-      if (res.destroyed || res.writableEnded) return;
-      if (res.headersSent) res.destroy();
-      else {
-        for (const header of ["Content-Length", "Content-Disposition", "Content-Type"]) res.removeHeader(header);
-        res.status(503).json({ statusCode: 503, message: "Document storage is unavailable" });
-      }
-      cleanup();
-    };
-    // Bound both metadata requests and stalled/unfinished response transmission.
-    const deadline = setTimeout(() => {
-      fail();
-    }, 30_000);
-    deadline.unref();
-    req.once("aborted", cleanup);
-    res.once("close", cleanup);
-    res.once("finish", cleanup);
-    try {
-      const result = await this.documentService.download(req.user.id, id, abort.signal);
-      stream = result.stream;
-      if (abort.signal.aborted || req.aborted || res.destroyed) {
-        cleanup();
-        return;
-      }
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="document-${id}.${result.contentType === "application/pdf" ? "pdf" : result.contentType === "image/png" ? "png" : "jpg"}"`,
-      );
-      res.setHeader("Content-Type", result.contentType);
-      res.setHeader("Content-Length", result.size);
-      res.setHeader("Cache-Control", "private, no-store");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      stream.once("error", fail);
-      stream.pipe(res);
-    } catch (error) {
-      cleanup();
-      if (res.destroyed || res.writableEnded) return;
-      if (res.headersSent) {
-        res.destroy();
-        return;
-      }
-      if (abort.signal.reason?.name === "TimeoutError") throw new ServiceUnavailableException("Document storage is unavailable");
-      throw error;
-    }
+    return streamDocumentResponse(req, res, id, signal => this.documentService.download(req.user.id, id, signal));
   }
 
   @ApiOperation({ summary: "Get document by id" })

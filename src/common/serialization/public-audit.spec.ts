@@ -13,6 +13,30 @@ const row = {
 };
 
 describe("public audit allowlist", () => {
+  it.each(["DOCUMENT_METADATA_UPDATED", "DOCUMENT_DELETED"])("projects staff business action %s without recovery metadata", action => {
+    const result = toPublicAudit({
+      ...row,
+      entityType: "Document",
+      action,
+      details: {
+        fromTitle: "Old",
+        toTitle: "New",
+        fromStatus: "DRAFT",
+        toStatus: "DRAFT",
+        fromVersion: 1,
+        toVersion: 1,
+        fileKey: "private",
+        operationId: "private",
+        deletedAt: "private",
+        recovery: { state: "private" },
+      },
+    });
+    expect(result?.details).toEqual(
+      action === "DOCUMENT_METADATA_UPDATED"
+        ? { fromTitle: "Old", toTitle: "New", fromVersion: 1, toVersion: 1 }
+        : { fromStatus: "DRAFT", toStatus: "DRAFT", fromVersion: 1, toVersion: 1 },
+    );
+  });
   it("preserves the business envelope while dropping sensitive and future fields", () => {
     expect(toPublicAudit(row)).toEqual({
       id: 1,

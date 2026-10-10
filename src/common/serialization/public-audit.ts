@@ -18,6 +18,8 @@ const DETAIL_FIELDS: Record<string, Record<string, readonly string[]>> = {
     DOCUMENT_CREATED: ["fromStatus", "toStatus", "fromVersion", "toVersion"],
     DOCUMENT_VERSION_UPLOADED: ["fromStatus", "toStatus", "fromVersion", "toVersion"],
     DOCUMENT_REVIEW: ["fromStatus", "toStatus", "feedback"],
+    DOCUMENT_METADATA_UPDATED: ["fromTitle", "toTitle", "fromVersion", "toVersion"],
+    DOCUMENT_DELETED: ["fromStatus", "toStatus", "fromVersion", "toVersion"],
   },
 };
 
