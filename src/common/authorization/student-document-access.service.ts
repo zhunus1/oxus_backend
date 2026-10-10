@@ -31,10 +31,20 @@ export class StudentDocumentAccessService {
     return where;
   }
 
-  async assertOwnTargetProgram(targetProgramId: number, portraitId: number) {
-    if (!(await this.prisma.targetProgram.findFirst({ where: { id: targetProgramId, studentPortraitId: portraitId }, select: { id: true } }))) {
+  async assertOwnTargetProgram(targetProgramId: number, portraitId: number, db: Prisma.TransactionClient = this.prisma) {
+    if (!(await db.targetProgram.findFirst({ where: { id: targetProgramId, studentPortraitId: portraitId }, select: { id: true } }))) {
       // The same error for a missing program and a program owned by another student.
       throw new ForbiddenException("Target program is not available for this student");
     }
+  }
+
+  /** Short READ COMMITTED mutations serialize with ordinary role/block/transfer UPDATE writers. */
+  async lockMutation(actorId: number, portraitId: number, tx: Prisma.TransactionClient, targetProgramId?: number | null) {
+    await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${actorId} FOR SHARE`;
+    await tx.$queryRaw`SELECT r.id FROM "Role" r JOIN "User" u ON u."roleId" = r.id WHERE u.id = ${actorId} FOR SHARE OF r`;
+    await tx.$queryRaw`SELECT id FROM "StudentPortrait" WHERE id = ${portraitId} FOR SHARE`;
+    if (targetProgramId != null) await tx.$queryRaw`SELECT id FROM "TargetProgram" WHERE id = ${targetProgramId} FOR SHARE`;
+    await this.assertPortrait(actorId, portraitId, "self", tx);
+    if (targetProgramId != null) await this.assertOwnTargetProgram(targetProgramId, portraitId, tx);
   }
 }

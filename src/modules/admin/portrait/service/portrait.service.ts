@@ -195,7 +195,9 @@ export class PortraitService {
   }
 
   // Audit log for a student portrait
-  async findAuditLogs(portraitId: number) {
+  async findAuditLogs(actorUserId: number, portraitId: number) {
+    // This expert history endpoint does not grant student self-service access.
+    await this.documentAccess.assertPortrait(actorUserId, portraitId, "staff-read");
     try {
       return await this.repo.findAuditLogs("StudentPortrait", portraitId);
     } catch (error) {

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { before, after, test } from "node:test";
 import { Test } from "@nestjs/testing";
 import { JwtService } from "@nestjs/jwt";
@@ -21,6 +22,7 @@ const PrismaService = klass("database/prisma.service", "PrismaService");
 const DocumentService = klass("modules/document/service/document.service", "DocumentService");
 const DocumentRepository = klass("modules/document/repository/document.repository", "DocumentRepository");
 const DocumentController = klass("modules/document/api/document.controller", "DocumentController");
+const Recovery = klass("modules/document/service/document-storage-recovery.service", "DocumentStorageRecoveryService");
 const Access = klass("common/authorization/student-document-access.service", "StudentDocumentAccessService");
 const RequirementService = klass("modules/program-requirement/service/program-requirement.service", "ProgramRequirementService");
 const RequirementRepository = klass("modules/program-requirement/repository/program-requirement.repository", "ProgramRequirementRepository");
@@ -61,13 +63,16 @@ const journey = { async logEvent() {} };
 let uploadCalls = 0;
 let uploadHook: (() => Promise<void>) | undefined;
 const upload = {
-  async uploadFile() {
+  async uploadPrivateDocument(file: Express.Multer.File, options: { beforeUpload: (key: string) => Promise<void> }) {
     uploadCalls++;
+    const fileKey = `documents/${randomUUID()}`;
+    await options.beforeUpload(fileKey);
     await uploadHook?.();
-    return `https://files.example.test/documents/${randomUUID()}`;
+    return { fileKey, contentType: file.mimetype, size: file.size };
   },
+  async deletePrivateDocument() {},
 };
-const service = new DocumentService(repo, upload, audit, journey, access, prisma);
+const service = new DocumentService(repo, upload, audit, journey, access, prisma, new Recovery(prisma, audit, upload));
 const targetRepo = Object.assign(new TargetRepository(), { prisma });
 const targetService = new TargetService(targetRepo, journey, access);
 const portraitRepo = Object.assign(new PortraitRepository(), { prisma });
@@ -113,7 +118,7 @@ async function newUser(role: string) {
 async function multipart(actor: number, program?: number, path = "/documents", method: "post" | "patch" = "post") {
   const req = http(actor, method, path).field("title", "Uploaded passport").field("documentType", "PASSPORT");
   if (program !== undefined) req.field("targetProgramId", String(program));
-  return req.attach("file", Buffer.from("test file"), "passport.pdf");
+  return req.attach("file", readFileSync(resolve("test/fixtures/student-documents/blank.pdf")), "passport.pdf");
 }
 
 before(async () => {
@@ -144,6 +149,7 @@ before(async () => {
     providers: [
       { provide: AuthService, useValue: new AuthService(new UsersService(new UsersRepository(prisma), journey), jwt, {}, new CookieService(), {}, {}) },
       { provide: PrismaService, useValue: prisma },
+      { provide: Access, useValue: access },
       { provide: AdminService, useValue: new AdminService(prisma, journey, {}, {}) },
       { provide: FinanceService, useValue: {} },
       { provide: LeadRealtimeGateway, useValue: {} },
@@ -699,7 +705,7 @@ test("all six self Document responses keep eleven fields even with a populated i
   assertPublicDocument(submitted.body);
   const reviewed = await http(expert, "patch", `/documents/${uploaded.body.id}/review`).send({ status: "APPROVED" }).expect(200);
   assertPublicDocument(reviewed.body);
-  assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: uploaded.body.id } })).fileKey, "private/test-only-key");
+  assert.match((await prisma.document.findUniqueOrThrow({ where: { id: uploaded.body.id } })).fileKey!, /^documents\/[0-9a-f-]{36}$/);
 });
 
 for (const operation of ["read", "review", "replace", "submit"] as const)

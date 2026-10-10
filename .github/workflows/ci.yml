@@ -92,6 +92,9 @@ jobs:
       - name: TypeScript
         run: yarn tsc --noEmit
 
+      - name: Private Document HTTP API on disposable PostgreSQL and MinIO
+        run: yarn test:documents-private-api
+
       - name: Clean migrations, schema diff, Student Documents security/migration, manual, reporting, demo and Redis integration
         run: yarn test:integration
 

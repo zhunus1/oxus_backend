@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { Prisma } from "generated/prisma/client";
+import { PUBLIC_AUDIT_SELECT, publicAuditActions, toPublicAudit } from "src/common/serialization/public-audit";
 
 @Injectable()
 export class AuditLogRepository extends BaseRepository {
@@ -17,10 +18,14 @@ export class AuditLogRepository extends BaseRepository {
   }
 
   async findByEntity(entityType: string, entityId: number) {
-    return this.prisma.auditLog.findMany({
-      where: { entityType, entityId },
+    const rows = await this.prisma.auditLog.findMany({
+      where: { entityType, entityId, action: { in: publicAuditActions(entityType) } },
       orderBy: { createdAt: "desc" },
-      include: { user: { select: { id: true, firstname: true, lastname: true } } },
+      select: PUBLIC_AUDIT_SELECT,
+    });
+    return rows.flatMap(row => {
+      const publicRow = toPublicAudit(row);
+      return publicRow ? [publicRow] : [];
     });
   }
 }

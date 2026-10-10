@@ -31,6 +31,42 @@ describe("student document validation", () => {
     expect(() => validateStudentDocumentFile(file)).toThrow(BadRequestException);
   });
 
+  it.each(["IHDR", "IDAT", "IEND"].flatMap(tag => Array.from({ length: 4 }, (_, index) => [tag, index] as const)))(
+    "rejects a high-bit mutation at PNG %s byte %i",
+    (tag, index) => {
+      const file = fixture("pixel.png", "image/png");
+      const offset = file.buffer.indexOf(Buffer.from(tag));
+      expect(offset).toBeGreaterThanOrEqual(0);
+      file.buffer[offset + index] |= 0x80;
+      expect(() => validateStudentDocumentFile(file)).toThrow(BadRequestException);
+    },
+  );
+
+  it.each([1, 4, 7, 8, 11])("rejects a truncated PNG chunk with %i bytes after the signature", length => {
+    const buffer = fixture("pixel.png", "image/png").buffer.subarray(0, 8 + length);
+    expect(() => validateStudentDocumentFile({ buffer, size: buffer.length, mimetype: "image/png" })).toThrow(BadRequestException);
+  });
+
+  it.each(["oversized chunk", "shifted boundary", "truncated CRC", "data after IEND"])("rejects PNG %s", condition => {
+    let buffer = Buffer.from(fixture("pixel.png", "image/png").buffer);
+    if (condition === "oversized chunk") buffer.writeUInt32BE(buffer.length, 8);
+    if (condition === "shifted boundary") buffer.writeUInt32BE(12, 8);
+    if (condition === "truncated CRC") buffer = buffer.subarray(0, buffer.length - 1);
+    if (condition === "data after IEND") buffer = Buffer.concat([buffer, Buffer.from([0])]);
+    expect(() => validateStudentDocumentFile({ buffer, size: buffer.length, mimetype: "image/png" })).toThrow(BadRequestException);
+  });
+
+  it.each(["size mismatch", "oversized", "MIME mismatch"])("preserves PNG %s validation", condition => {
+    const file = fixture("pixel.png", "image/png");
+    if (condition === "size mismatch") file.size--;
+    if (condition === "oversized") {
+      file.buffer = Buffer.concat([file.buffer, Buffer.alloc(STUDENT_DOCUMENT_MAX_BYTES)]);
+      file.size = file.buffer.length;
+    }
+    if (condition === "MIME mismatch") file.mimetype = "image/jpeg";
+    expect(() => validateStudentDocumentFile(file)).toThrow(BadRequestException);
+  });
+
   it.each(["%PDF-1.0\n", "%PDF-1.7\r\n", "%PDF-2.0\n"])("accepts the supported PDF header %j", header => {
     const file = fixture();
     file.buffer = Buffer.concat([Buffer.from(header), file.buffer.subarray(9)]);
@@ -182,6 +218,64 @@ describe("student document storage failures and isolation", () => {
     file.buffer.fill(0);
     await result;
     expect(send.mock.calls.find(([command]) => command instanceof PutObjectCommand)![0].input.Body).toEqual(fixture().buffer);
+  });
+  it("persists a recovery intent before PutObject and awaits it", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const prepare = jest.fn(async () => {
+      entered();
+      await pending;
+    });
+    const upload = service.uploadPrivateDocument(fixture(), { beforeUpload: prepare });
+    await ready;
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
+    release();
+    const result = await upload;
+    expect(prepare).toHaveBeenCalledWith(result.fileKey);
+  });
+  it("does not send PutObject when durable preparation fails", async () => {
+    const error = new Error("recovery journal unavailable");
+    await expect(
+      service.uploadPrivateDocument(fixture(), {
+        beforeUpload: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
+  });
+  it("passes the same request signal to all private download SDK requests", async () => {
+    const signal = new AbortController().signal;
+    const { stream } = await service.streamPrivateDocument(key, signal);
+    expect(send.mock.calls.every(([, options]) => options.abortSignal === signal)).toBe(true);
+    stream.destroy();
+  });
+  it("sanitizes a cancelled GetObject request", async () => {
+    const abort = new AbortController();
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    send.mockImplementation((command, options) =>
+      command instanceof GetObjectCommand
+        ? new Promise((_resolve, reject) => {
+            options.abortSignal.addEventListener("abort", () => reject(new Error("secret SDK endpoint")), { once: true });
+            entered();
+          })
+        : successful(command),
+    );
+    const pending = service.streamPrivateDocument(key, abort.signal);
+    const rejected = expect(pending).rejects.toThrow("Document storage is unavailable");
+    await ready;
+    abort.abort();
+    await rejected;
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret SDK endpoint");
   });
   it.each(["upload", "download", "delete", "exists"])("sanitizes %s storage failure", async operation => {
     await service.ensurePrivateBucket();

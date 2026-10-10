@@ -5,7 +5,8 @@ import { toPublicDocument } from "src/common/serialization/public-document";
 export class DocumentEntity {
   @ApiProperty() id: number;
   @ApiProperty() title: string;
-  @ApiProperty() fileUrl: string;
+  @ApiProperty({ description: "Private documents: relative authenticated backend download endpoint. Legacy documents: existing URL; send JWT explicitly for private downloads." })
+  fileUrl: string;
   @ApiProperty({ enum: RequirementType }) documentType: RequirementType;
   @ApiProperty() version: number;
   @ApiProperty() status: DocumentStatus;

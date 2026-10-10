@@ -19,7 +19,8 @@ function validPng(buffer: Buffer): boolean {
   while (offset + 12 <= buffer.length) {
     const length = buffer.readUInt32BE(offset);
     if (length > buffer.length - offset - 12) return false;
-    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const type = buffer.toString("latin1", offset + 4, offset + 8);
+    if (!/^[A-Za-z]{4}$/.test(type)) return false;
     if (offset === 8) {
       if (type !== "IHDR" || length !== 13 || buffer.readUInt32BE(offset + 8) === 0 || buffer.readUInt32BE(offset + 12) === 0) return false;
     } else if (type === "IHDR") return false;

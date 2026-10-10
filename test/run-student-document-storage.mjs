@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { withCleanup } from "./runner-utils.mjs";
+import { withCleanup, withDisposableDatabase, localTestDatabaseUrl, testChildEnvironment } from "./runner-utils.mjs";
+import { Client } from "pg";
+
+assert(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "--document-api"), "Unsupported storage runner argument");
+const documentApi = process.argv[2] === "--document-api";
+// Validate database locality before any Docker operation in the combined API gate.
+const database = documentApi ? localTestDatabaseUrl(testChildEnvironment(process.env.DATABASE_URL).DATABASE_URL) : undefined;
 
 const image = "oxus-student-documents-minio-test:2025-10-15";
 const owner = randomUUID();
@@ -95,7 +101,22 @@ try {
         DOTENV_CONFIG_PATH: "/dev/null",
         DOTENV_CONFIG_OVERRIDE: "",
       };
-      await command(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=1", "test/student-document-storage.test.ts"], { env, isTest: true });
+      if (database) {
+        const admin = new Client({ connectionString: database.toString() });
+        await withCleanup(
+          async () => {
+            await admin.connect();
+            await withDisposableDatabase(admin, database, "oxus_private_document", async url => {
+              const childEnv = { ...env, DATABASE_URL: url };
+              await command(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: childEnv, isTest: true });
+              await command(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=1", "test/document-private-api.test.ts"], { env: childEnv, isTest: true });
+            });
+          },
+          () => admin.end(),
+        );
+      } else {
+        await command(process.execPath, ["--import", "tsx", "--test", "--test-concurrency=1", "test/student-document-storage.test.ts"], { env, isTest: true });
+      }
       if (interrupted) throw new Error(`Interrupted: ${interrupted}`);
     },
     async () => {

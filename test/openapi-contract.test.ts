@@ -29,6 +29,22 @@ before(async () => {
 after(async () => {
   await app?.close();
 });
+
+test("private documents advertise JWT multipart limits and authenticated binary downloads", () => {
+  const upload = operation("/documents", "post");
+  const replacement = operation("/documents/{id}/new-version", "patch");
+  for (const api of [upload, replacement]) {
+    assert(api.security.some((item: any) => Object.hasOwn(item, "bearer")));
+    const body = api.requestBody.content["multipart/form-data"].schema;
+    assert.equal(body.properties.file.format, "binary");
+    assert.match(body.properties.file.description, /10 MiB/);
+    for (const status of [400, 401, 403, 404, 413, 503]) assert(api.responses[String(status)]);
+  }
+  assert(replacement.responses["409"]);
+  const download = operation("/documents/{id}/file");
+  for (const mime of ["application/pdf", "image/jpeg", "image/png"]) assert.equal(download.responses["200"].content[mime].schema.format, "binary");
+  for (const header of ["Content-Disposition", "Content-Type", "Content-Length", "Cache-Control", "X-Content-Type-Options"]) assert(download.responses["200"].headers[header]);
+});
 test("manual lead writes expose optional frontend metrics while preview keeps its server-calculation contract", () => {
   for (const name of ["CreateManualLeadV2Dto", "SaveCalculatorAnswersDto", "ExpressSubmissionDto"]) {
     const dto = doc.components.schemas[name];

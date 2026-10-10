@@ -57,9 +57,9 @@ after(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
-async function probe(mode) {
+async function probe(mode, args = [], environment = {}) {
   const record = join(directory, `${mode}.json`);
-  const run = spawnSync(process.execPath, ["--import", preload, "test/run-student-document-storage.mjs"], {
+  const run = spawnSync(process.execPath, ["--import", preload, "test/run-student-document-storage.mjs", ...args], {
     encoding: "utf8",
     timeout: 10000,
     env: {
@@ -72,11 +72,25 @@ async function probe(mode) {
       NODE_OPTIONS: "",
       DOTENV_CONFIG_PATH: "synthetic-server.env",
       DOTENV_CONFIG_OVERRIDE: "true",
+      ...environment,
     },
   });
   assert.equal(run.error, undefined);
   return { run, state: JSON.parse(await readFile(record, "utf8")) };
 }
+
+test("combined Document API runner rejects a remote database before any Docker command", async () => {
+  const { run, state } = await probe("remote-database", ["--document-api"], { DATABASE_URL: "postgresql://synthetic:synthetic@remote.example.test/fixture_test" });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /loopback/);
+  assert.deepEqual(state.commands, []);
+});
+test("unknown runner modes are rejected before any Docker command", async () => {
+  const { run, state } = await probe("unknown-mode", ["--unknown"]);
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Unsupported/);
+  assert.deepEqual(state.commands, []);
+});
 
 test("successful runner owns loopback container, sanitizes child environment and removes only its ID", async () => {
   const { run, state } = await probe("success");

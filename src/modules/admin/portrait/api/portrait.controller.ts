@@ -84,7 +84,7 @@ export class PortraitController {
   @ApiOperation({ summary: "Get audit log for student portrait" })
   @ApiResponse({ status: 200, description: "Audit logs fetched successfully" })
   @Get(":id/audit-log")
-  async findAuditLogs(@Param("id", ParseIntPipe) id: number) {
-    return this.portraitService.findAuditLogs(id);
+  async findAuditLogs(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.portraitService.findAuditLogs(req.user.id, id);
   }
 }

@@ -32,6 +32,7 @@
     "test:phase2-reporting": "nest build && node --import tsx --test --test-concurrency=1 test/phase2-reporting.test.ts",
     "test:integration": "node test/run-integration.mjs",
     "test:documents-storage": "nest build && node --test test/student-document-storage-runner.test.mjs && node test/run-student-document-storage.mjs",
+    "test:documents-private-api": "nest build && node test/run-student-document-storage.mjs --document-api",
     "lint:documents-storage-runner": "eslint --config test/storage-runner-eslint.config.mjs test/run-student-document-storage.mjs test/student-document-storage-runner.test.mjs test/storage-runner-eslint.config.mjs"
   },
   "dependencies": {

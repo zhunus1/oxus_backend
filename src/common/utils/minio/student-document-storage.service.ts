@@ -64,7 +64,9 @@ export class StudentDocumentStorageService {
   }
 
   /** Concurrent callers share only the current check; later operations always reverify policy/ACL. */
-  async ensurePrivateBucket(): Promise<void> {
+  async ensurePrivateBucket(signal?: AbortSignal): Promise<void> {
+    // Request cancellation must not abort another caller's shared readiness check.
+    if (signal) return this.verifyBucket(signal);
     if (this.bucketCheck) return this.bucketCheck;
     const check = this.verifyBucket();
     this.bucketCheck = check;
@@ -75,22 +77,22 @@ export class StudentDocumentStorageService {
     }
   }
 
-  private async verifyBucket(): Promise<void> {
+  private async verifyBucket(signal?: AbortSignal): Promise<void> {
     try {
       const Bucket = this.bucket;
       const client = this.minio.getS3Client();
       try {
-        await client.send(new HeadBucketCommand({ Bucket }));
+        await client.send(new HeadBucketCommand({ Bucket }), { abortSignal: signal });
       } catch (error) {
         if (error.$metadata?.httpStatusCode !== 404) throw error;
         try {
-          await client.send(new CreateBucketCommand({ Bucket }));
+          await client.send(new CreateBucketCommand({ Bucket }), { abortSignal: signal });
         } catch (error) {
           if (error.name !== "BucketAlreadyOwnedByYou") throw error;
         }
       }
       try {
-        const { Policy } = await client.send(new GetBucketPolicyCommand({ Bucket }));
+        const { Policy } = await client.send(new GetBucketPolicyCommand({ Bucket }), { abortSignal: signal });
         const policy = JSON.parse(Policy ?? "null") as { Statement?: { Effect?: string }[] } | null;
         // Deliberately conservative: reject all grants, including conditional/authenticated grants.
         if (!policy || !Array.isArray(policy.Statement) || policy.Statement.some(statement => statement?.Effect !== "Deny")) throw new Error("Unverifiable policy");
@@ -98,20 +100,27 @@ export class StudentDocumentStorageService {
         // AccessDenied, unsupported API, malformed output and generic 404 are not evidence of privacy.
         if (error.name !== "NoSuchBucketPolicy" || error.$metadata?.httpStatusCode !== 404) throw error;
       }
-      this.assertPrivateAcl(await client.send(new GetBucketAclCommand({ Bucket })));
+      this.assertPrivateAcl(await client.send(new GetBucketAclCommand({ Bucket }), { abortSignal: signal }));
     } catch {
       throw this.failure("bucket privacy verification");
     }
   }
 
-  async uploadPrivateDocument(file: Pick<Express.Multer.File, "buffer" | "size" | "mimetype"> | undefined) {
+  async uploadPrivateDocument(
+    file: Pick<Express.Multer.File, "buffer" | "size" | "mimetype"> | undefined,
+    options?: { signal?: AbortSignal; beforeUpload?: (fileKey: string) => Promise<void> },
+  ) {
     const validated = validateStudentDocumentFile(file);
     // Own the bytes across asynchronous I/O; callers cannot mutate the validated buffer mid-upload.
     const body = Buffer.from(validated.buffer);
-    await this.ensurePrivateBucket();
+    await this.ensurePrivateBucket(options?.signal);
     const fileKey = `documents/${randomUUID()}`;
+    // Persist a recovery intent before PutObject, without coupling storage to the database.
+    await options?.beforeUpload?.(fileKey);
     try {
-      await this.minio.getS3Client().send(new PutObjectCommand({ Bucket: this.bucket, Key: fileKey, Body: body, ContentType: validated.contentType, IfNoneMatch: "*" }));
+      await this.minio
+        .getS3Client()
+        .send(new PutObjectCommand({ Bucket: this.bucket, Key: fileKey, Body: body, ContentType: validated.contentType, IfNoneMatch: "*" }), { abortSignal: options?.signal });
       return { fileKey, contentType: validated.contentType, size: validated.size };
     } catch {
       throw this.failure("upload");
@@ -119,14 +128,14 @@ export class StudentDocumentStorageService {
   }
 
   /** Caller owns the returned stream and must destroy it if the consumer disconnects. */
-  async streamPrivateDocument(key: string) {
+  async streamPrivateDocument(key: string, signal?: AbortSignal) {
     this.assertKey(key);
-    await this.ensurePrivateBucket();
+    await this.ensurePrivateBucket(signal);
     let body: Readable | undefined;
     try {
       const client = this.minio.getS3Client();
-      this.assertPrivateAcl(await client.send(new GetObjectAclCommand({ Bucket: this.bucket, Key: key })));
-      const result = await client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      this.assertPrivateAcl(await client.send(new GetObjectAclCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal }));
+      const result = await client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
       if (result.Body instanceof Readable) body = result.Body;
       const size = result.ContentLength;
       if (!body || !isStudentDocumentMime(result.ContentType) || typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0 || size > STUDENT_DOCUMENT_MAX_BYTES)
@@ -146,11 +155,11 @@ export class StudentDocumentStorageService {
     }
   }
 
-  async deletePrivateDocument(key: string): Promise<void> {
+  async deletePrivateDocument(key: string, signal?: AbortSignal): Promise<void> {
     this.assertKey(key);
-    await this.ensurePrivateBucket();
+    await this.ensurePrivateBucket(signal);
     try {
-      await this.minio.getS3Client().send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.minio.getS3Client().send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
     } catch {
       throw this.failure("delete");
     }
