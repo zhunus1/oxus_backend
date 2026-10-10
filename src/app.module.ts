@@ -27,6 +27,7 @@ import { AuditLogModule } from "./modules/audit-log/audit-log.module";
 import { ExpertDashboardModule } from "./modules/expert-dashboard/expert-dashboard.module";
 import { TargetProgramModule } from "./modules/target-program/target-program.module";
 import { DocumentModule } from "./modules/document/document.module";
+import { DocumentObservationModule } from "./modules/document/observation/document-observation.module";
 import { RoadmapModule } from "./modules/roadmap/roadmap.module";
 import { ExpertCatalogModule } from "./modules/expert-catalog/expert-catalog.module";
 import { ExpertScheduleModule } from "./modules/expert-schedule/expert-schedule.module";
@@ -87,6 +88,7 @@ import { CollabMeetingModule } from "./modules/collab-meeting/collab-meeting.mod
     ExpertDashboardModule,
     TargetProgramModule,
     DocumentModule,
+    DocumentObservationModule,
     RoadmapModule,
     ExpertCatalogModule,
     ExpertScheduleModule,

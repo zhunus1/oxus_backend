@@ -76,7 +76,9 @@ jobs:
         run: yarn prisma generate
 
       - name: Lint
-        run: yarn lint
+        run: |
+          yarn lint
+          yarn lint:documents-observation
 
       - name: Test
         run: yarn test --runInBand

@@ -15,6 +15,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });
+  app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().set("trust proxy", 1);
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
 

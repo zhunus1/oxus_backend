@@ -27,12 +27,14 @@ const suites = [
   "sales-expert-demo.test.ts",
   "sales-expert-v2-smoke.ts",
   "document-security-http.test.ts",
+  "document-observation.test.ts",
 ];
 const admin = new Client({ connectionString: base.toString() });
 await withCleanup(async () => {
   await admin.connect();
   console.log("\nIntegration suite: test-runner.test.mjs");
   runCommand(["--test", "test/test-runner.test.mjs"], environment);
+  runCommand(["--test", "test/document-observation-cli.test.mjs"], environment);
   for (const suite of suites) {
     await withDisposableDatabase(admin, base, "oxus_ci", async url => {
       const env = testChildEnvironment(url, environment);
