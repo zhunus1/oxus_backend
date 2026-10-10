@@ -153,6 +153,17 @@ before(async () => {
   app = mod.createNestApplication();
   app.setGlobalPrefix("api/v1");
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidUnknownValues: false }));
+  app.use((req: any, res: any, next: () => void) => {
+    const id = req.headers["x-multipart-observation"];
+    if (typeof id === "string")
+      res.once("finish", () => {
+        multipartObservations.set(
+          id,
+          Object.values(req.body ?? {}).reduce<number>((n, value) => n + (Array.isArray(value) ? value.length : 1), 0),
+        );
+      });
+    next();
+  });
   await app.listen(0, "127.0.0.1");
 });
 after(async () => {
@@ -246,6 +257,220 @@ const mutationSnapshot = async () => ({
   storageCalls,
 });
 
+// Phase 5A.2: small, safe malformed-name fixtures; no destructive parser probes.
+for (const route of ["create", "version"] as const)
+  for (const fileFirst of [false, true])
+    for (const name of ["title[nested]", "title[0]", "title[]", "title[", "title%22suffix"])
+      test(`Phase 5A.2 ${route} rejects non-scalar name ${name} ${fileFirst ? "file-first" : "fields-first"}`, async () => {
+        const doc = route === "version" ? await createPrivate() : undefined;
+        const fields: [string, string][] =
+          route === "create"
+            ? [
+                [name, "small"],
+                ["documentType", "PASSPORT"],
+              ]
+            : [[name, "small"]];
+        await assertMultipartRejected(studentMultipart(route, doc?.id, fields, fileFirst), route === "create" ? 3 : 0);
+        await http(student, "get", "/documents/me").expect(200);
+      });
+
+for (const route of ["create", "version"] as const)
+  test(`Phase 5A.2 ${route} missing boundary is 400 before any mutation`, async () => {
+    const doc = route === "version" ? await createPrivate() : undefined;
+    await assertMultipartRejected(
+      http(student, doc ? "patch" : "post", doc ? `/documents/${doc.id}/new-version` : "/documents")
+        .set("Content-Type", "multipart/form-data")
+        .send("small malformed body"),
+      0,
+    );
+  });
+
+for (const route of ["create", "version"] as const)
+  test(`Phase 5A.2 ${route} malformed names without JWT remain 401 before parsing`, async () => {
+    const doc = route === "version" ? await createPrivate() : undefined;
+    const before = await mutationSnapshot();
+    await request(app.getHttpServer())
+      [doc ? "patch" : "post"](`/api/v1${doc ? `/documents/${doc.id}/new-version` : "/documents"}`)
+      .field("title[nested]", "small")
+      .attach("file", fixture(), "small.pdf")
+      .expect(401);
+    assert.deepEqual(await mutationSnapshot(), before);
+  });
+
+test("Phase 5A.2 foreign ownership rejects malformed replacement before parsing", async () => {
+  const doc = await createPrivate();
+  const before = await mutationSnapshot();
+  await http(foreignStudent, "patch", `/documents/${doc.id}/new-version`).field("title[nested]", "small").attach("file", fixture(), "small.pdf").expect(403);
+  assert.deepEqual(await mutationSnapshot(), before);
+});
+
+// Phase 5A.1: bounded raw multipart admission, before DTO whitelist and private SDK calls.
+const multipartObservations = new Map<string, number>();
+const studentMultipart = (route: "create" | "version", id: number | undefined, fields: [string, string][], fileFirst = false) => {
+  const req = http(student, route === "create" ? "post" : "patch", route === "create" ? "/documents" : `/documents/${id}/new-version`);
+  if (fileFirst) req.attach("file", fixture(), "small.pdf");
+  for (const [name, value] of fields) req.field(name, value);
+  if (!fileFirst) req.attach("file", fixture(), "small.pdf");
+  return req;
+};
+const rawStudentMultipart = (route: "create" | "version", id: number | undefined, fields: [string, string][], bytes: Buffer, skippedParts = 0) => {
+  const boundary = `hardening-${randomUUID()}`;
+  const parts: Buffer[] = fields.map(([name, value]) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  parts.push(
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="small.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    bytes,
+    Buffer.from("\r\n"),
+  );
+  for (let i = 0; i < skippedParts; i++) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: attachment\r\n\r\nskipped\r\n`));
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return http(student, route === "create" ? "post" : "patch", route === "create" ? "/documents" : `/documents/${id}/new-version`)
+    .set("Content-Type", `multipart/form-data; boundary=${boundary}`)
+    .send(Buffer.concat(parts));
+};
+const assertMultipartRejected = async (req: any, maxRetainedFields: number) => {
+  const before = await mutationSnapshot();
+  const observation = randomUUID();
+  const response = await req.set("X-Multipart-Observation", observation).expect(400);
+  assert.equal(response.body.statusCode, 400);
+  assert(!JSON.stringify(response.body).includes(config.AWS_MINIO_ENDPOINT));
+  assert.deepEqual(await mutationSnapshot(), before); // full rows + business/technical journal + every SDK call.
+  const retained = multipartObservations.get(observation);
+  multipartObservations.delete(observation);
+  assert(retained !== undefined && retained <= maxRetainedFields);
+};
+
+for (const fileFirst of [false, true]) {
+  for (const count of [0, 1, 2, 3])
+    test(`Phase 5A.1 create ${count} allowed fields ${fileFirst ? "file-first" : "fields-first"}`, async () => {
+      const fields: [string, string][] = [
+        ["title", "Compatible title"],
+        ["documentType", "PASSPORT"],
+        ["targetProgramId", String(target)],
+      ];
+      const req = studentMultipart("create", undefined, fields.slice(0, count), fileFirst);
+      if (count < 2) await assertMultipartRejected(req, count);
+      else {
+        const response = await req.expect(201);
+        assert.equal(response.body.title, "Compatible title");
+        assert.equal(response.body.targetProgramId, count === 3 ? target : null);
+        assert.deepEqual((await binary(http(student, "get", `/documents/${response.body.id}/file`)).expect(200)).body, fixture());
+      }
+    });
+
+  for (const invalid of [
+    "unknown third field",
+    "protected field",
+    "fourth field",
+    "duplicate title",
+    "duplicate documentType",
+    "duplicate targetProgramId",
+    "nested title",
+    "array targetProgramId",
+  ])
+    test(`Phase 5A.1 create rejects ${invalid} ${fileFirst ? "file-first" : "fields-first"} before storage`, async () => {
+      const fields: [string, string][] = [
+        ["title", "One"],
+        ["documentType", "PASSPORT"],
+      ];
+      if (invalid === "unknown third field") fields.push(["ignored", "previously stripped"]);
+      if (invalid === "protected field") fields.push(["fileKey", "never-accepted"]);
+      if (invalid === "fourth field") fields.push(["targetProgramId", String(target)], ["extra", "no"]);
+      if (invalid === "duplicate title") fields.push(["title", "Two"]);
+      if (invalid === "duplicate documentType") fields.push(["documentType", "OTHER"]);
+      if (invalid === "duplicate targetProgramId") fields.push(["targetProgramId", String(target)], ["targetProgramId", String(target)]);
+      if (invalid === "nested title") fields[0] = ["title[nested]", "One"];
+      if (invalid === "array targetProgramId") fields.push(["targetProgramId[]", String(target)]);
+      await assertMultipartRejected(studentMultipart("create", undefined, fields, fileFirst), 3);
+    });
+
+  for (const name of ["title", "documentType", "targetProgramId", "ignored"])
+    test(`Phase 5A.1 version rejects ${name} ${fileFirst ? "file-first" : "fields-first"} before storage`, async () => {
+      const doc = await createPrivate();
+      await assertMultipartRejected(studentMultipart("version", doc.id, [[name, "previously ignored"]], fileFirst), 0);
+    });
+}
+
+for (const route of ["create", "version"] as const) {
+  test(`Phase 5A.1 ${route} missing file remains 400 with no side effects`, async () => {
+    const doc = route === "version" ? await createPrivate() : undefined;
+    const req = http(student, doc ? "patch" : "post", doc ? `/documents/${doc.id}/new-version` : "/documents");
+    if (!doc) req.field("title", "Missing file").field("documentType", "PASSPORT");
+    else req.set("Content-Type", "multipart/form-data; boundary=empty").send("--empty--\r\n");
+    await assertMultipartRejected(req, doc ? 0 : 2);
+  });
+
+  test(`Phase 5A.1 ${route} counts skipped multipart parts before storage`, async () => {
+    const doc = route === "version" ? await createPrivate() : undefined;
+    const fields: [string, string][] = doc
+      ? []
+      : [
+          ["title", "Part bound"],
+          ["documentType", "PASSPORT"],
+        ];
+    const req = rawStudentMultipart(route, doc?.id, fields, fixture(), doc ? 1 : 2);
+    const before = await mutationSnapshot();
+    const response = await req.expect(400);
+    assert.equal(response.body.message, "Too many parts");
+    assert.deepEqual(await mutationSnapshot(), before);
+  });
+
+  for (const shape of ["100000 small fields", "64 half-MiB fields"])
+    for (const validFile of [false, true])
+      test(`Phase 5A.1 ${route} bounds ${shape} with ${validFile ? "valid" : "invalid"} small file`, async () => {
+        const doc = route === "version" ? await createPrivate() : undefined;
+        const count = shape.startsWith("100000") ? 100000 : 64;
+        const value = "x".repeat(count === 100000 ? 64 : 512 * 1024);
+        const fields: [string, string][] = doc
+          ? []
+          : [
+              ["title", "Resource bound"],
+              ["documentType", "PASSPORT"],
+            ];
+        fields.push(...Array.from({ length: count }, (): [string, string] => ["ignored", value]));
+        await assertMultipartRejected(rawStudentMultipart(route, doc?.id, fields, validFile ? fixture() : Buffer.from("invalid")), doc ? 0 : 3);
+      });
+}
+
+for (const bytes of [1024 * 1024 - 1, 1024 * 1024, 1024 * 1024 + 1])
+  test(`Phase 5A.1 student title preserves existing fieldSize boundary at ${bytes} bytes`, async () => {
+    const req = studentMultipart("create", undefined, [
+      ["title", "x".repeat(bytes)],
+      ["documentType", "PASSPORT"],
+    ]);
+    if (bytes >= 1024 * 1024) await assertMultipartRejected(req, 1);
+    else {
+      const response = await req.expect(201);
+      assert.equal(response.body.title.length, bytes);
+      assert.equal((await row(response.body.id)).title.length, bytes);
+    }
+  });
+
+test("Phase 5A.1 four concurrent field-heavy requests retain bounded fields with no side effects", async () => {
+  const docs = [await createPrivate(), await createPrivate()];
+  const before = await mutationSnapshot();
+  const ids = Array.from({ length: 4 }, () => randomUUID());
+  const requests = ids.map((id, i) => {
+    const route = i < 2 ? "create" : "version";
+    const fields: [string, string][] =
+      i < 2
+        ? [
+            ["title", "Concurrent"],
+            ["documentType", "PASSPORT"],
+          ]
+        : [];
+    fields.push(...Array.from({ length: 10000 }, (): [string, string] => ["ignored", "x".repeat(64)]));
+    return rawStudentMultipart(route, i < 2 ? undefined : docs[i - 2].id, fields, fixture()).set("X-Multipart-Observation", id);
+  });
+  const responses = await Promise.all(requests);
+  assert(responses.every(r => r.status === 400));
+  assert.deepEqual(await mutationSnapshot(), before);
+  for (let i = 0; i < ids.length; i++) {
+    const count = multipartObservations.get(ids[i]);
+    multipartObservations.delete(ids[i]);
+    assert(count !== undefined && count <= (i < 2 ? 3 : 0));
+  }
+});
+
 for (const route of ["create", "version"] as const) {
   const setup = async () => {
     const doc = route === "version" ? await createPrivate() : undefined;
@@ -300,12 +525,12 @@ for (const route of ["create", "version"] as const) {
     });
 
   for (const fields of ["extra", "duplicate"])
-    test(`Phase 5A student ${route} ${fields} fields cannot bypass oversized validation`, async () => {
+    test(`Phase 5A.1 student ${route} ${fields} fields preserve parser error precedence`, async () => {
       const { req } = await setup();
       const before = await mutationSnapshot();
       const upload = req().field("ignored", "one");
       if (fields === "duplicate") upload.field("ignored", "two");
-      await upload.attach("file", sizedPdf(maxBytes + 1), "oversized.pdf").expect(413);
+      await upload.attach("file", sizedPdf(maxBytes + 1), "oversized.pdf").expect(route === "version" || fields === "duplicate" ? 400 : 413);
       assert.deepEqual(await mutationSnapshot(), before);
     });
 
@@ -350,14 +575,12 @@ test("Phase 5A foreign student cannot replace exact-MAX document or use foreign 
   assert.deepEqual(await mutationSnapshot(), before);
 });
 
-test("Phase 5A create preserves whitelist and all three text fields at exact MAX", async () => {
+test("Phase 5A.1 create preserves all three allowed text fields at exact MAX", async () => {
   const buffer = sizedPdf(maxBytes);
   const response = await http(student, "post", "/documents")
     .field("title", "All fields")
     .field("documentType", "PASSPORT")
     .field("targetProgramId", String(target))
-    .field("ignored", "one")
-    .field("ignored", "two")
     .attach("file", buffer, "max.pdf")
     .expect(201);
   assert.equal(response.body.targetProgramId, target);
@@ -365,10 +588,10 @@ test("Phase 5A create preserves whitelist and all three text fields at exact MAX
   assert.deepEqual((await binary(http(student, "get", `/documents/${response.body.id}/file`)).expect(200)).body, buffer);
 });
 
-test("Phase 5A version preserves ignored text-field compatibility and inclusive MAX", async () => {
+test("Phase 5A.1 version preserves file-only upload and inclusive MAX", async () => {
   const doc = await createPrivate();
   const buffer = sizedPdf(maxBytes);
-  const result = await http(student, "patch", `/documents/${doc.id}/new-version`).field("ignored", "one").field("ignored", "two").attach("file", buffer, "max.pdf").expect(200);
+  const result = await http(student, "patch", `/documents/${doc.id}/new-version`).attach("file", buffer, "max.pdf").expect(200);
   assert.deepEqual((await binary(http(student, "get", `/documents/${result.body.id}/file`)).expect(200)).body, buffer);
 });
 

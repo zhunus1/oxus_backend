@@ -116,8 +116,11 @@ async function newUser(role: string) {
   return prisma.user.create({ data: { firstname: "Test", lastname: role, email: `${randomUUID()}@example.test`, password: "test-only", role: { connect: { code: role } } } });
 }
 async function multipart(actor: number, program?: number, path = "/documents", method: "post" | "patch" = "post") {
-  const req = http(actor, method, path).field("title", "Uploaded passport").field("documentType", "PASSPORT");
-  if (program !== undefined) req.field("targetProgramId", String(program));
+  const req = http(actor, method, path);
+  if (method === "post") {
+    req.field("title", "Uploaded passport").field("documentType", "PASSPORT");
+    if (program !== undefined) req.field("targetProgramId", String(program));
+  }
   return req.attach("file", readFileSync(resolve("test/fixtures/student-documents/blank.pdf")), "passport.pdf");
 }
 

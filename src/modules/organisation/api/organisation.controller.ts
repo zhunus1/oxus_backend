@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiConsumes, ApiOperation, ApiResponse } from "@nestjs/swagger";
@@ -54,7 +55,7 @@ export class OrganisationController {
   @ApiResponse({ status: 200, description: "Logo uploaded" })
   @ApiResponse({ status: 400, description: "Invalid file — must be JPEG/PNG/WebP, max 512 KB" })
   @ApiResponse({ status: 404, description: "Organisation not found" })
-  @UseInterceptors(FileInterceptor("logo"))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("logo"))
   @Post(":id/logo")
   async uploadLogo(@Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     return this.service.uploadLogo(id, file);
@@ -73,7 +74,7 @@ export class OrganisationController {
   @ApiResponse({ status: 200, description: "Cover uploaded" })
   @ApiResponse({ status: 400, description: "Invalid file — must be JPEG/PNG/WebP, max 2 MB" })
   @ApiResponse({ status: 404, description: "Organisation not found" })
-  @UseInterceptors(FileInterceptor("cover"))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("cover"))
   @Post(":id/cover")
   async uploadCover(@Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     return this.service.uploadCover(id, file);

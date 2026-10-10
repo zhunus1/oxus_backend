@@ -69,7 +69,7 @@
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.2.3",
     "jsonrepair": "^3.14.0",
-    "multer": "^2.0.2",
+    "multer": "2.4.0",
     "nanoid": "^5.1.6",
     "nodemailer": "^7.0.12",
     "openai": "^6.16.0",
@@ -138,5 +138,8 @@
       "^generated/(.*)$": "<rootDir>/../generated/$1"
     },
     "testEnvironment": "node"
+  },
+  "resolutions": {
+    "multer": "2.4.0"
   }
 }

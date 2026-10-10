@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiParam, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
@@ -20,9 +21,8 @@ const snapshot = {
   expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
   expectedUpdatedAt: { type: "string", format: "date-time", description: "Exact UTC updatedAt with milliseconds from last response" },
 };
-// Busboy emits size/parts limit at equality. One-byte/part sentinel permits the inclusive contract;
-// the existing validator still rejects any file >10 MiB, without a Put or another file copy.
-const staffMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES + 1 };
+// Multer 2.4 uses inclusive limits; preserve the existing actual byte/part budgets.
+const staffMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES, fieldNestingDepth: 0 };
 const staffIdSchema = { type: "integer", minimum: 1, maximum: 2147483647 } as const;
 
 @ApiTags("Staff - Student Documents")
@@ -74,7 +74,11 @@ export class StaffDocumentController {
   @StaffInput(StaffCreateDocumentDto)
   @ApiOperation({ summary: "Upload for an existing StudentPortrait without student login" })
   @UseGuards(StaffDocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 3, fieldSize: 1024, parts: 5 } }), StaffDocumentInputInterceptor)
+  @UseInterceptors(
+    MulterExceptionInterceptor,
+    FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 3, fieldSize: 1024, parts: 4 } }),
+    StaffDocumentInputInterceptor,
+  )
   @ApiConsumes("multipart/form-data")
   @ApiBody({
     schema: {
@@ -119,7 +123,11 @@ export class StaffDocumentController {
   @StaffInput(StaffDocumentSnapshotDto)
   @ApiOperation({ summary: "Replace private bytes using strict snapshot CAS; preserve old object" })
   @UseGuards(StaffDocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 2, fieldSize: 1024, parts: 4 } }), StaffDocumentInputInterceptor)
+  @UseInterceptors(
+    MulterExceptionInterceptor,
+    FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 2, fieldSize: 1024, parts: 3 } }),
+    StaffDocumentInputInterceptor,
+  )
   @ApiConsumes("multipart/form-data")
   @ApiBody({ schema: { type: "object", required: ["file", "expectedVersion", "expectedUpdatedAt"], properties: { file, ...snapshot } } })
   @ApiResponse({ status: 200, type: DocumentEntity })

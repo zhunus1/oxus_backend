@@ -961,6 +961,80 @@ test("staff Swagger advertises exactly seven routes, strict DTOs and safe binary
     assert.equal((doc.paths[root + "/{documentId}/file"] as any).get.responses["200"].content[mime].schema.format, "binary");
 });
 
+// Phase 5A.2: parser rejection preserves staff CAS, journals and every SDK call.
+for (const route of ["create", "version"] as const)
+  for (const fileFirst of [false, true])
+    for (const name of ["title[nested]", "title[0]", "title[]", "title[", "title%22suffix"])
+      test(`Phase 5A.2 staff ${route} rejects malformed name ${name} ${fileFirst ? "file-first" : "fields-first"}`, async () => {
+        const doc = route === "version" ? await create() : undefined;
+        const before = { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes };
+        const req = http(expert, doc ? "patch" : "post", doc ? `${base()}/${doc.id}/new-version` : base());
+        if (fileFirst) req.attach("file", fixture(), "small.pdf");
+        req.field(name, "small");
+        if (doc) req.field("expectedVersion", String(doc.version));
+        else req.field("documentType", "OTHER");
+        if (!fileFirst) req.attach("file", fixture(), "small.pdf");
+        const response = await req.expect(400);
+        assert.equal(response.body.statusCode, 400);
+        assert(!JSON.stringify(response.body).includes("stack"));
+        assert(!JSON.stringify(response.body).includes(config.AWS_MINIO_ENDPOINT));
+        assert.deepEqual(
+          { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes },
+          before,
+        );
+        await http(expert, "get", base()).expect(200);
+      });
+
+for (const fileFirst of [false, true])
+  for (const route of ["create", "version"] as const)
+    test(`Phase 5A.2 staff ${route} valid multipart ${fileFirst ? "file-first" : "fields-first"} preserves stored bytes`, async () => {
+      const doc = route === "version" ? await create() : undefined;
+      const req = http(expert, doc ? "patch" : "post", doc ? `${base()}/${doc.id}/new-version` : base());
+      if (fileFirst) req.attach("file", fixture(), "small.pdf");
+      if (doc) req.field("expectedVersion", String(doc.version)).field("expectedUpdatedAt", doc.updatedAt);
+      else req.field("title", "Compatible").field("documentType", "OTHER").field("targetProgramId", String(target));
+      if (!fileFirst) req.attach("file", fixture(), "small.pdf");
+      const response = await req.expect(doc ? 200 : 201);
+      assert.deepEqual((await binary(http(expert, "get", `${base()}/${response.body.id}/file`)).expect(200)).body, fixture());
+    });
+
+for (const route of ["create", "version"] as const)
+  for (const extra of [false, true])
+    test(`Phase 5A.2 staff ${route} skipped parts ${extra ? "over" : "at"} actual part budget`, async () => {
+      const doc = route === "version" ? await create() : undefined;
+      const before = { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes };
+      const boundary = `compat-${randomUUID()}`;
+      const textFields = doc
+        ? [
+            ["expectedVersion", String(doc.version)],
+            ["expectedUpdatedAt", doc.updatedAt],
+          ]
+        : [
+            ["title", "Compatible"],
+            ["documentType", "OTHER"],
+          ];
+      const chunks = textFields.map(([name, value]) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+      chunks.push(
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="small.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+        fixture(),
+        Buffer.from("\r\n"),
+      );
+      // Create previously allowed four actual parts; replacement allowed three.
+      for (let i = 0; i < (doc ? 0 : 1) + Number(extra); i++) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: attachment\r\n\r\nskipped\r\n`));
+      chunks.push(Buffer.from(`--${boundary}--\r\n`));
+      const response = await http(expert, doc ? "patch" : "post", doc ? `${base()}/${doc.id}/new-version` : base())
+        .set("Content-Type", `multipart/form-data; boundary=${boundary}`)
+        .send(Buffer.concat(chunks))
+        .expect(extra ? 400 : doc ? 200 : 201);
+      if (extra) {
+        assert.equal(response.body.message, "Too many parts");
+        assert.deepEqual(
+          { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes },
+          before,
+        );
+      } else assert.deepEqual((await binary(http(expert, "get", `${base()}/${response.body.id}/file`)).expect(200)).body, fixture());
+    });
+
 // Compatibility matrix: student sentinel remediation must preserve both staff upload paths.
 for (const route of ["create", "version"])
   for (const delta of [-1, 0, 1, 2])

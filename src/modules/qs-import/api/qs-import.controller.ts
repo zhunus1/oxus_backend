@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
@@ -36,7 +37,7 @@ export class QsImportController {
     },
   })
   @ApiResponse({ status: 201, description: "QS import job created successfully" })
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file"))
   async createJob(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateQsImportJobDto) {
     return this.qsImportService.createImportJob(file, req.user.id, dto);
   }

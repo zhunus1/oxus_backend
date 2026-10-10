@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
@@ -15,9 +16,13 @@ import { DocumentMutationGuard } from "./document-mutation.guard";
 import type { Response } from "express";
 import { streamDocumentResponse } from "./document-stream-response";
 import { RequirementType } from "generated/prisma/client";
+import { StudentDocumentCreateInputInterceptor } from "./student-document-create-input.interceptor";
 
-// Busboy emits its file limit at equality; the validator still enforces the inclusive 10 MiB bound.
-const studentMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES + 1 };
+// Multer 2.4 applies inclusive file/part limits; no Busboy sentinels are needed.
+const studentMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES, fieldNestingDepth: 0 };
+// Keep Phase 5A.1 budgets at four create parts and one replacement part.
+const studentCreateLimits = { ...studentMultipartLimits, fields: 3, parts: 4 };
+const studentVersionLimits = { ...studentMultipartLimits, fields: 0, parts: 1 };
 
 const uploadBody = {
   schema: {
@@ -59,7 +64,7 @@ export class DocumentController {
   @ApiResponse({ status: 409, description: "Document access changed concurrently; reload before uploading" })
   @ApiResponse({ status: 403, description: "Document upload access denied" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: studentMultipartLimits }))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentCreateLimits }), StudentDocumentCreateInputInterceptor)
   @Post()
   async upload(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateDocumentDto) {
     const portraitId = await this.getPortraitId(req.user.id);
@@ -113,7 +118,7 @@ export class DocumentController {
   @ApiResponse({ status: 403, description: "Document replacement access denied" })
   @ApiResponse({ status: 409, description: "Document changed concurrently; reload before replacing" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: studentMultipartLimits }))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentVersionLimits }))
   @Patch(":id/new-version")
   async newVersion(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     const portraitId = await this.getPortraitId(req.user.id);
