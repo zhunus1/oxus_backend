@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ApiConsumes, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiProduces, ApiResponse, ApiTags } from "@nestjs/swagger";
+import type { ApiBodyOptions } from "@nestjs/swagger";
 import { JwtAuthGuard } from "src/modules/admin/auth/rbac/auth.guard";
 import { RolesGuard } from "src/modules/admin/auth/rbac/roles.guard";
 import { Roles } from "src/modules/admin/auth/rbac/roles.decorator";
@@ -9,8 +11,39 @@ import { DocumentService } from "../service/document.service";
 import { CreateDocumentDto } from "./dto/create-document.dto";
 import { ReviewDocumentDto } from "./dto/review-document.dto";
 import { StudentPortraitService } from "src/modules/studentportrait/service/studentportrait.service";
+import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES } from "src/common/utils/minio/student-document-file";
+import { DocumentMutationGuard } from "./document-mutation.guard";
+import type { Response } from "express";
+import { streamDocumentResponse } from "./document-stream-response";
+import { RequirementType } from "generated/prisma/client";
+import { StudentDocumentCreateInputInterceptor } from "./student-document-create-input.interceptor";
+
+// Multer 2.4 applies inclusive file/part limits; no Busboy sentinels are needed.
+const studentMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES, fieldNestingDepth: 0 };
+// Keep Phase 5A.1 budgets at four create parts and one replacement part.
+const studentCreateLimits = { ...studentMultipartLimits, fields: 3, parts: 4 };
+const studentVersionLimits = { ...studentMultipartLimits, fields: 0, parts: 1 };
+
+const uploadBody = {
+  schema: {
+    type: "object",
+    required: ["file", "title", "documentType"],
+    properties: {
+      file: { type: "string", format: "binary", description: "One non-empty PDF/JPEG/PNG, at most 10 MiB; MIME and bytes must match" },
+      title: { type: "string" },
+      documentType: { type: "string", enum: Object.values(RequirementType) },
+      targetProgramId: { type: "integer" },
+    },
+  },
+} satisfies ApiBodyOptions;
 
 @ApiTags("Documents")
+@ApiBearerAuth()
+@ApiResponse({ status: 400, description: "Invalid input or document bytes" })
+@ApiResponse({ status: 401, description: "JWT required or account disabled" })
+@ApiResponse({ status: 404, description: "Active document or private object not found" })
+@ApiResponse({ status: 413, description: "File exceeds 10 MiB" })
+@ApiResponse({ status: 503, description: "Private storage unavailable or timed out" })
 @UseGuards(JwtAuthGuard)
 @Controller("documents")
 export class DocumentController {
@@ -26,8 +59,12 @@ export class DocumentController {
 
   @ApiOperation({ summary: "Upload a document" })
   @ApiConsumes("multipart/form-data")
+  @ApiBody(uploadBody)
   @ApiResponse({ status: 201, description: "Document uploaded successfully" })
-  @UseInterceptors(FileInterceptor("file"))
+  @ApiResponse({ status: 409, description: "Document access changed concurrently; reload before uploading" })
+  @ApiResponse({ status: 403, description: "Document upload access denied" })
+  @UseGuards(DocumentMutationGuard)
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentCreateLimits }), StudentDocumentCreateInputInterceptor)
   @Post()
   async upload(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateDocumentDto) {
     const portraitId = await this.getPortraitId(req.user.id);
@@ -36,23 +73,52 @@ export class DocumentController {
 
   @ApiOperation({ summary: "Get my documents" })
   @ApiResponse({ status: 200, description: "Documents fetched successfully" })
+  @ApiResponse({ status: 403, description: "Document list access denied" })
   @Get("me")
   async findMy(@Req() req: UserRequest) {
     const portraitId = await this.getPortraitId(req.user.id);
-    return this.documentService.findMyDocuments(portraitId);
+    return this.documentService.findMyDocuments(req.user.id, portraitId);
+  }
+
+  @ApiOperation({
+    summary: "Download an authorized private document",
+    description: "Send JWT credentials explicitly. Legacy documents retain their existing public fileUrl and return 404 here.",
+  })
+  @ApiProduces("application/pdf", "image/jpeg", "image/png")
+  @ApiResponse({
+    status: 200,
+    description: "Binary attachment",
+    schema: { type: "string", format: "binary" },
+    headers: {
+      "Content-Disposition": { description: "attachment with a server-generated filename", schema: { type: "string" } },
+      "Content-Type": { description: "Verified PDF/JPEG/PNG metadata", schema: { type: "string" } },
+      "Content-Length": { description: "Positive integer, at most 10 MiB", schema: { type: "integer" } },
+      "Cache-Control": { schema: { type: "string", example: "private, no-store" } },
+      "X-Content-Type-Options": { schema: { type: "string", example: "nosniff" } },
+    },
+  })
+  @ApiResponse({ status: 403, description: "Document ownership or active expert assignment required" })
+  @Get(":id/file")
+  async download(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Res() res: Response) {
+    return streamDocumentResponse(req, res, id, signal => this.documentService.download(req.user.id, id, signal));
   }
 
   @ApiOperation({ summary: "Get document by id" })
   @ApiResponse({ status: 200, description: "Document fetched successfully" })
+  @ApiResponse({ status: 403, description: "Document read access denied" })
   @Get(":id")
-  async findById(@Param("id", ParseIntPipe) id: number) {
-    return this.documentService.findById(id);
+  async findById(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.documentService.findById(req.user.id, id);
   }
 
   @ApiOperation({ summary: "Upload new version of document" })
   @ApiConsumes("multipart/form-data")
+  @ApiBody({ schema: { type: "object", required: ["file"], properties: { file: uploadBody.schema.properties.file } } })
   @ApiResponse({ status: 200, description: "New version uploaded successfully" })
-  @UseInterceptors(FileInterceptor("file"))
+  @ApiResponse({ status: 403, description: "Document replacement access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before replacing" })
+  @UseGuards(DocumentMutationGuard)
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentVersionLimits }))
   @Patch(":id/new-version")
   async newVersion(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     const portraitId = await this.getPortraitId(req.user.id);
@@ -61,16 +127,20 @@ export class DocumentController {
 
   @ApiOperation({ summary: "Submit document for expert review" })
   @ApiResponse({ status: 200, description: "Document submitted for review" })
+  @ApiResponse({ status: 403, description: "Document submission access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before submitting" })
   @Patch(":id/submit-for-review")
   async submitForReview(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
     const portraitId = await this.getPortraitId(req.user.id);
     return this.documentService.submitForReview(req.user.id, portraitId, id);
   }
 
-  @ApiOperation({ summary: "Expert reviews a document" })
+  @ApiOperation({ summary: "Assigned active expert or admin reviews a document" })
   @ApiResponse({ status: 200, description: "Document reviewed successfully" })
+  @ApiResponse({ status: 403, description: "Document review access denied" })
+  @ApiResponse({ status: 409, description: "Document changed concurrently; reload before reviewing" })
   @UseGuards(RolesGuard)
-  @Roles("EXPERT")
+  @Roles("EXPERT", "ADMIN")
   @Patch(":id/review")
   async review(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @Body() dto: ReviewDocumentDto) {
     return this.documentService.review(req.user.id, id, dto);

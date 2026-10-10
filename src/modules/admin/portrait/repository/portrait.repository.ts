@@ -1,4 +1,6 @@
 import { Injectable } from "@nestjs/common";
+import { PUBLIC_DOCUMENT_SELECT } from "src/common/serialization/public-document";
+import { PUBLIC_AUDIT_SELECT, publicAuditActions, toPublicAudit } from "src/common/serialization/public-audit";
 import { ApplicationStatus, Prisma, ProcessStep } from "generated/prisma/client";
 import { BaseRepository } from "src/database/prisma.repository";
 import { StudentPortraitQueryDto } from "../api/dto/student-portrait-query.dto";
@@ -93,11 +95,11 @@ export class PortraitRepository extends BaseRepository {
         targetPrograms: {
           include: {
             organisation: { select: { id: true, nameEn: true, nameRu: true, nameKk: true, slug: true, country: true } },
-            documents: true,
+            documents: { where: { studentPortraitId: id, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT },
           },
           orderBy: { deadline: { sort: "asc", nulls: "last" } },
         },
-        documents: { orderBy: { updatedAt: "desc" } },
+        documents: { where: { deletedAt: null }, orderBy: { updatedAt: "desc" }, select: PUBLIC_DOCUMENT_SELECT },
         reviews: true,
         assignedExpert: { include: { user: { select: { id: true, firstname: true, lastname: true } } } },
       },
@@ -139,10 +141,14 @@ export class PortraitRepository extends BaseRepository {
   }
 
   async findAuditLogs(entityType: string, entityId: number) {
-    return this.prisma.auditLog.findMany({
-      where: { entityType, entityId },
+    const rows = await this.prisma.auditLog.findMany({
+      where: { entityType, entityId, action: { in: publicAuditActions(entityType) } },
       orderBy: { createdAt: "desc" },
-      include: { user: { select: { id: true, firstname: true, lastname: true } } },
+      select: PUBLIC_AUDIT_SELECT,
+    });
+    return rows.flatMap(row => {
+      const publicRow = toPublicAudit(row);
+      return publicRow ? [publicRow] : [];
     });
   }
 }

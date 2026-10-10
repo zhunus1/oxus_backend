@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Get, Header, HttpCode, Param, Post, Req, UseGuards, UseInterceptors } from "@nestjs/common";
 import { NoFilesInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiConsumes, ApiResponse, ApiTags, ApiOperation, ApiBody } from "@nestjs/swagger";
@@ -37,7 +38,7 @@ export class PaymentController {
   @ApiResponse({ status: 403, description: "Invalid signature or merchant/mode context" })
   @ApiResponse({ status: 409, description: "Settlement conflict" })
   @ApiResponse({ status: 503, description: "Verifier configuration unavailable" })
-  @UseInterceptors(NoFilesInterceptor())
+  @UseInterceptors(MulterExceptionInterceptor, NoFilesInterceptor())
   @HttpCode(200)
   @Header("Content-Type", "application/xml")
   @Post("freedompay-webhook")

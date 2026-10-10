@@ -6,6 +6,7 @@ import { StaleCommentDto } from "../api/dto/stale-comment.dto";
 import { ExpertStudentsQueryDto } from "../api/dto/expert-students-query.dto";
 import { ProcessStep } from "generated/prisma/client";
 import messages from "src/configs/messages";
+import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
 
 @Injectable()
 export class ExpertDashboardService {
@@ -14,6 +15,7 @@ export class ExpertDashboardService {
   constructor(
     private readonly repo: ExpertDashboardRepository,
     private readonly auditLogService: AuditLogService,
+    private readonly documentAccess: StudentDocumentAccessService,
   ) {}
 
   private convertDeadlineToLocal(deadline: Date | null, timezone: string): string | null {
@@ -30,6 +32,7 @@ export class ExpertDashboardService {
   }
 
   private async getConsultantProfile(userId: number) {
+    await this.documentAccess.portraitWhere(userId, "staff-read");
     const profile = await this.repo.findConsultantProfileByUserId(userId);
     if (!profile) {
       throw new NotFoundException(messages.NOT_FOUND("ConsultantProfile"));
@@ -261,7 +264,7 @@ export class ExpertDashboardService {
 
       return grouped;
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
       this.logger.error(`Error fetching kanban: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR("ExpertDashboard"));
     }
@@ -275,7 +278,7 @@ export class ExpertDashboardService {
 
       return await this.repo.findStaleStudents(profile.id, thresholdDate);
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
       this.logger.error(`Error fetching stale students: ${error}`);
       throw new InternalServerErrorException(messages.DATABASE_FETCH_ERROR("ExpertDashboard"));
     }

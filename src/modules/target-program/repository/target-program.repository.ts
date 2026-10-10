@@ -1,14 +1,18 @@
 import { Injectable } from "@nestjs/common";
 import { BaseRepository } from "src/database/prisma.repository";
 import { Prisma } from "generated/prisma/client";
+import { PUBLIC_DOCUMENT_SELECT } from "src/common/serialization/public-document";
 
 @Injectable()
 export class TargetProgramRepository extends BaseRepository {
   private readonly detailInclude = {
     organisation: { select: { id: true, nameEn: true, nameRu: true, nameKk: true, slug: true, country: true } },
     program: true,
-    documents: true,
   } satisfies Prisma.TargetProgramInclude;
+
+  private includeForPortrait(studentPortraitId: number) {
+    return { ...this.detailInclude, documents: { where: { studentPortraitId, deletedAt: null }, select: PUBLIC_DOCUMENT_SELECT } } satisfies Prisma.TargetProgramInclude;
+  }
 
   async findProgramById(id: number) {
     return this.prisma.program.findUnique({
@@ -29,7 +33,7 @@ export class TargetProgramRepository extends BaseRepository {
         intake: data.intake,
         studentPortraitId: data.studentPortraitId,
       },
-      include: this.detailInclude,
+      include: this.includeForPortrait(data.studentPortraitId),
     });
   }
 
@@ -37,7 +41,7 @@ export class TargetProgramRepository extends BaseRepository {
     return this.prisma.targetProgram.findMany({
       where: { studentPortraitId },
       orderBy: { deadline: { sort: "asc", nulls: "last" } },
-      include: this.detailInclude,
+      include: this.includeForPortrait(studentPortraitId),
     });
   }
 
@@ -51,15 +55,15 @@ export class TargetProgramRepository extends BaseRepository {
   async findByIdForPortrait(id: number, studentPortraitId: number) {
     return this.prisma.targetProgram.findFirst({
       where: { id, studentPortraitId },
-      include: this.detailInclude,
+      include: this.includeForPortrait(studentPortraitId),
     });
   }
 
-  async update(id: number, data: Prisma.TargetProgramUpdateInput) {
+  async update(id: number, data: Prisma.TargetProgramUpdateInput, studentPortraitId: number) {
     return this.prisma.targetProgram.update({
       where: { id },
       data,
-      include: this.detailInclude,
+      include: this.includeForPortrait(studentPortraitId),
     });
   }
 

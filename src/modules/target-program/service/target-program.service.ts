@@ -5,6 +5,7 @@ import { UpdateTargetProgramDto } from "../api/dto/update-target-program.dto";
 import messages from "src/configs/messages";
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
+import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
 
 @Injectable()
 export class TargetProgramService {
@@ -14,6 +15,7 @@ export class TargetProgramService {
   constructor(
     private readonly repo: TargetProgramRepository,
     private readonly userJourneyLog: UserJourneyLogService,
+    private readonly documentAccess: StudentDocumentAccessService,
   ) {}
 
   async create(userId: number, portraitId: number, dto: CreateTargetProgramDto) {
@@ -50,7 +52,8 @@ export class TargetProgramService {
     }
   }
 
-  async findMyPrograms(portraitId: number) {
+  async findMyPrograms(userId: number, portraitId: number) {
+    await this.documentAccess.assertPortrait(userId, portraitId, "self");
     try {
       return await this.repo.findByPortraitId(portraitId);
     } catch (error) {
@@ -59,7 +62,8 @@ export class TargetProgramService {
     }
   }
 
-  async findById(portraitId: number, id: number) {
+  async findById(userId: number, portraitId: number, id: number) {
+    await this.documentAccess.assertPortrait(userId, portraitId, "self");
     try {
       const tp = await this.repo.findByIdForPortrait(id, portraitId);
       if (!tp) {
@@ -74,6 +78,7 @@ export class TargetProgramService {
   }
 
   async update(userId: number, portraitId: number, id: number, dto: UpdateTargetProgramDto) {
+    await this.documentAccess.assertPortrait(userId, portraitId, "self");
     try {
       const tp = await this.repo.findById(id);
       if (!tp) {
@@ -112,7 +117,7 @@ export class TargetProgramService {
         }
       }
 
-      return await this.repo.update(id, updateData);
+      return await this.repo.update(id, updateData, portraitId);
     } catch (error) {
       if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) {
         throw error;

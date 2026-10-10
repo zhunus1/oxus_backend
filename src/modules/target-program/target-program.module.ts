@@ -7,9 +7,10 @@ import { StudentPortraitModule } from "../studentportrait/studentportrait.module
 import { JwtModule } from "@nestjs/jwt";
 
 import { UserJourneyModule } from "src/modules/user-journey/user-journey.module";
+import { StudentDocumentAccessModule } from "src/common/authorization/student-document-access.module";
 
 @Module({
-  imports: [PrismaModule, StudentPortraitModule, JwtModule, UserJourneyModule],
+  imports: [PrismaModule, StudentPortraitModule, JwtModule, UserJourneyModule, StudentDocumentAccessModule],
   providers: [TargetProgramService, TargetProgramRepository],
   exports: [TargetProgramService],
   controllers: [TargetProgramController],
