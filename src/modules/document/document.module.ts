@@ -6,14 +6,19 @@ import { StudentPortraitModule } from "../studentportrait/studentportrait.module
 import { DocumentService } from "./service/document.service";
 import { DocumentRepository } from "./repository/document.repository";
 import { DocumentController } from "./api/document.controller";
+import { DocumentMutationGuard } from "./api/document-mutation.guard";
+import { StaffDocumentController } from "./api/staff-document.controller";
+import { StaffDocumentMutationGuard } from "./api/staff-document-mutation.guard";
+import { DocumentStorageRecoveryService } from "./service/document-storage-recovery.service";
 import { JwtModule } from "@nestjs/jwt";
 
 import { UserJourneyModule } from "src/modules/user-journey/user-journey.module";
+import { StudentDocumentAccessModule } from "src/common/authorization/student-document-access.module";
 
 @Module({
-  imports: [PrismaModule, JwtModule, MinioModule, AuditLogModule, StudentPortraitModule, UserJourneyModule],
-  providers: [DocumentService, DocumentRepository],
+  imports: [PrismaModule, JwtModule, MinioModule, AuditLogModule, StudentPortraitModule, UserJourneyModule, StudentDocumentAccessModule],
+  providers: [DocumentService, DocumentRepository, DocumentMutationGuard, StaffDocumentMutationGuard, DocumentStorageRecoveryService],
   exports: [DocumentService],
-  controllers: [DocumentController],
+  controllers: [DocumentController, StaffDocumentController],
 })
 export class DocumentModule {}

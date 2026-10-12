@@ -1,0 +1,1 @@
+export const MAX_NEW_CONTRACT_INSTALLMENTS = 3;

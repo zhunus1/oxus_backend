@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
 import messages from "src/configs/messages";
 import { ProgramRequirementRepository } from "../repository/program-requirement.repository";
 import { CreateProgramRequirementDto } from "../api/dto/create-program-requirement.dto";
@@ -9,7 +10,10 @@ export class ProgramRequirementService {
   private readonly logger = new Logger(ProgramRequirementService.name);
   private readonly entityName = "ProgramRequirement";
 
-  constructor(private readonly repo: ProgramRequirementRepository) {}
+  constructor(
+    private readonly repo: ProgramRequirementRepository,
+    private readonly access: StudentDocumentAccessService,
+  ) {}
 
   async findByProgramId(programId: number) {
     try {
@@ -75,7 +79,7 @@ export class ProgramRequirementService {
     }
   }
 
-  async getRequirementStatus(targetProgramId: number, userId: number, roleCode?: string) {
+  async getRequirementStatus(targetProgramId: number, userId: number) {
     try {
       const targetProgram = await this.repo.findTargetProgramWithProgram(targetProgramId);
 
@@ -83,19 +87,14 @@ export class ProgramRequirementService {
         throw new NotFoundException(messages.NOT_FOUND("TargetProgram"));
       }
 
-      const isOwner = targetProgram.studentPortrait?.userId === userId;
-      const isPrivileged = roleCode === "ADMIN" || roleCode === "EXPERT";
-
-      if (!isOwner && !isPrivileged) {
-        throw new BadRequestException("You do not have access to this target program");
-      }
+      await this.access.assertPortrait(userId, targetProgram.studentPortraitId);
 
       if (!targetProgram.programId) {
         throw new BadRequestException("TargetProgram is not linked to a Program");
       }
 
       const requirements = await this.repo.findByProgramId(targetProgram.programId);
-      const documents = await this.repo.findDocumentsForTargetProgram(targetProgramId);
+      const documents = await this.repo.findDocumentsForTargetProgram(targetProgramId, targetProgram.studentPortraitId);
 
       return requirements.map(requirement => {
         const matchedDocument = documents.find(doc => doc.documentType === requirement.type);
@@ -114,7 +113,7 @@ export class ProgramRequirementService {
         };
       });
     } catch (error) {
-      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+      if (error instanceof NotFoundException || error instanceof BadRequestException || error instanceof ForbiddenException) {
         throw error;
       }
 

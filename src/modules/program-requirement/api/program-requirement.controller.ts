@@ -52,6 +52,6 @@ export class ProgramRequirementController {
   @ApiResponse({ status: 200, description: "Requirement status fetched successfully" })
   @Get("target-programs/:targetProgramId/requirements-status")
   async getRequirementStatus(@Param("targetProgramId", ParseIntPipe) targetProgramId: number, @Req() req: UserRequest) {
-    return this.programRequirementService.getRequirementStatus(targetProgramId, req.user.id, req.user.roleCode);
+    return this.programRequirementService.getRequirementStatus(targetProgramId, req.user.id);
   }
 }

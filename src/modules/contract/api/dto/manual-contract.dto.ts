@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsPositive, Max, Min } from "class-validator";
 import type { ContractPaymentType } from "generated/prisma/enums";
+import { MAX_NEW_CONTRACT_INSTALLMENTS } from "../../domain/manual-contract.constants";
 
 export class ContractPaymentTermsDto {
   @ApiPropertyOptional({ enum: ["FULL", "INSTALLMENT"], default: "FULL" })
@@ -8,11 +9,15 @@ export class ContractPaymentTermsDto {
   @IsIn(["FULL", "INSTALLMENT"])
   paymentType?: ContractPaymentType;
 
-  @ApiPropertyOptional({ minimum: 1, maximum: 120, description: "Director-approved number entered by the expert; FULL uses 1" })
+  @ApiPropertyOptional({
+    minimum: 1,
+    maximum: MAX_NEW_CONTRACT_INSTALLMENTS,
+    description: "Total payments including the first receipt: FULL uses 1; INSTALLMENT requires 2 or 3 monthly payments",
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(120)
+  @Max(MAX_NEW_CONTRACT_INSTALLMENTS)
   installmentCount?: number;
 }
 

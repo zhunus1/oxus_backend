@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "generated/prisma/client";
 import type { ContractPaymentType, SubscriptionTier } from "generated/prisma/enums";
 import { TIER_SLOTS } from "src/modules/studentportrait/domain/contract-benefits";
+import { MAX_NEW_CONTRACT_INSTALLMENTS } from "./manual-contract.constants";
 
 /** Shared by every contract writer; historical amounts retain their existing compatibility. */
 export function commercialTerms(
@@ -11,12 +12,20 @@ export function commercialTerms(
   paymentType: ContractPaymentType = "FULL",
   installmentCount?: number,
   legacy = false,
+  preserveExistingInstallments = false,
 ) {
   if (!Object.hasOwn(TIER_SLOTS, subscriptionTier) || !TIER_SLOTS[subscriptionTier]) throw new BadRequestException("Select a paid tariff");
-  return paymentTerms(price, currency, paymentType, installmentCount, legacy);
+  return paymentTerms(price, currency, paymentType, installmentCount, legacy, preserveExistingInstallments);
 }
 
-export function paymentTerms(price: number, currency: string, paymentType: ContractPaymentType = "FULL", installmentCount?: number, legacy = false) {
+export function paymentTerms(
+  price: number,
+  currency: string,
+  paymentType: ContractPaymentType = "FULL",
+  installmentCount?: number,
+  legacy = false,
+  preserveExistingInstallments = false,
+) {
   if (
     !Number.isFinite(price) ||
     price <= 0 ||
@@ -25,8 +34,10 @@ export function paymentTerms(price: number, currency: string, paymentType: Contr
   )
     throw new BadRequestException("Contract price must be 1500000 KZT or 750000 KZT for Cambridge Line");
   const count = installmentCount ?? (paymentType === "FULL" ? 1 : undefined);
-  if (!["FULL", "INSTALLMENT"].includes(paymentType) || !Number.isSafeInteger(count) || count! < 1 || count! > 120 || (paymentType === "FULL" ? count !== 1 : count! < 2))
-    throw new BadRequestException("FULL requires one payment; INSTALLMENT requires an explicit count from 2 to 120");
+  // Only confirmation of persisted terms preserves a historical plan; editing legacy prices does not lift the new-plan limit.
+  const maximum = legacy && preserveExistingInstallments ? 120 : MAX_NEW_CONTRACT_INSTALLMENTS;
+  if (!["FULL", "INSTALLMENT"].includes(paymentType) || !Number.isSafeInteger(count) || count! < 1 || count! > maximum || (paymentType === "FULL" ? count !== 1 : count! < 2))
+    throw new BadRequestException(`FULL requires one payment; INSTALLMENT requires an explicit count from 2 to ${maximum}`);
   return { paymentType, installmentCount: count! };
 }
 

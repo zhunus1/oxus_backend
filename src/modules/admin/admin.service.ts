@@ -1,4 +1,5 @@
 import { LeadRealtimeGateway } from "../lead/realtime/lead-realtime.gateway";
+import { PUBLIC_DOCUMENT_SELECT } from "src/common/serialization/public-document";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { EducationLevel, Prisma, ProcessStep } from "generated/prisma/client";
 import { PrismaService } from "src/database/prisma.service";
@@ -232,7 +233,7 @@ export class AdminService {
               },
               orderBy: { updatedAt: "desc" },
             },
-            documents: { orderBy: { updatedAt: "desc" } },
+            documents: { where: { deletedAt: null }, orderBy: { updatedAt: "desc" }, select: PUBLIC_DOCUMENT_SELECT },
             assignedExpert: {
               include: {
                 user: {

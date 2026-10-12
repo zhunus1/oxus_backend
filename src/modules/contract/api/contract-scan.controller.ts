@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { scanRequest, scanUploadResponse } from "src/common/openapi/flow-responses";
 import { Controller, Get, Header, Param, Post, Req, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
@@ -24,7 +25,8 @@ export class ContractScanController {
   @ApiResponse({ status: 400, description: "Invalid file MIME/content; PDF, JPEG or PNG only, up to 10 MiB" })
   @ApiResponse({ status: 413, description: "File exceeds 10 MiB" })
   @ApiResponse({ status: 409, description: "Attach scans after manual contract confirmation" })
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  // Preserve the existing exclusive boundary now that Multer limits are inclusive.
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 - 1, files: 1 } }))
   upload(@Req() req: UserRequest, @Param("id") id: string, @UploadedFile() file: Express.Multer.File) {
     return this.scans.upload(id, req.user.id, file, req.user.roleCode === "ADMIN");
   }

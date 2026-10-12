@@ -47,7 +47,7 @@ export class ExpertDashboardRepository extends BaseRepository {
       include: { organisation: { select: { id: true, nameEn: true, nameRu: true, slug: true, country: true } } },
       orderBy: { deadline: { sort: "asc", nulls: "last" } as const },
     },
-    documents: { select: { id: true, title: true, status: true, documentType: true, version: true, updatedAt: true } },
+    documents: { where: { deletedAt: null }, select: { id: true, title: true, status: true, documentType: true, version: true, updatedAt: true } },
   } satisfies Prisma.StudentPortraitInclude;
 
   private buildStudentUserFilters(query: ExpertStudentsQueryDto): Prisma.UserWhereInput {

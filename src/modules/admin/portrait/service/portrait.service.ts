@@ -10,6 +10,7 @@ import { UpdateTargetProgramStatusDto } from "../api/dto/update-target-program-s
 import { UpdatePortraitProcessStepDto } from "../api/dto/update-portrait-process-step.dto";
 import { CreateTargetProgramDto } from "src/modules/target-program/api/dto/create-target-program.dto";
 import { TargetProgramService } from "src/modules/target-program/service/target-program.service";
+import { StudentDocumentAccessService } from "src/common/authorization/student-document-access.service";
 
 @Injectable()
 export class PortraitService {
@@ -20,6 +21,7 @@ export class PortraitService {
     private readonly repo: PortraitRepository,
     private readonly auditLogService: AuditLogService,
     private readonly targetProgramService: TargetProgramService,
+    private readonly documentAccess: StudentDocumentAccessService,
   ) {}
 
   /** Expert must be the assigned consultant; ADMIN may act on any portrait. */
@@ -108,13 +110,13 @@ export class PortraitService {
   }
 
   // 360° full profile view
-  async findFullProfile(actorUserId: number, roleCode: string | undefined, id: number) {
+  async findFullProfile(actorUserId: number, id: number) {
     try {
       const portrait = await this.repo.findFullProfile(id);
       if (!portrait) {
         throw new NotFoundException(messages.NOT_FOUND_BY_ID(this.entityName, id));
       }
-      await this.assertAssignedExpertOrAdmin(actorUserId, roleCode, id);
+      await this.documentAccess.assertPortrait(actorUserId, id, "staff-read");
       return portrait;
     } catch (error) {
       if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
@@ -193,7 +195,9 @@ export class PortraitService {
   }
 
   // Audit log for a student portrait
-  async findAuditLogs(portraitId: number) {
+  async findAuditLogs(actorUserId: number, portraitId: number) {
+    // This expert history endpoint does not grant student self-service access.
+    await this.documentAccess.assertPortrait(actorUserId, portraitId, "staff-read");
     try {
       return await this.repo.findAuditLogs("StudentPortrait", portraitId);
     } catch (error) {

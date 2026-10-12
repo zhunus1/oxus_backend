@@ -1,3 +1,4 @@
+import { MulterExceptionInterceptor } from "src/common/interceptors/multer-exception.interceptor";
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBody, ApiConsumes, ApiOperation, ApiParam, ApiResponse, ApiTags } from "@nestjs/swagger";
@@ -36,7 +37,7 @@ export class StudentTaskController {
   @ApiParam({ name: "id", type: Number })
   @ApiConsumes("multipart/form-data")
   @ApiResponse({ status: 201, description: "File uploaded, task completed" })
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file"))
   @Post(":id/file")
   submitFile(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     return this.taskService.submitFile(req.user.id, id, file);

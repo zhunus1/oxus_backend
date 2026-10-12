@@ -48,7 +48,7 @@ export async function confirmManualContract(tx: Prisma.TransactionClient, id: st
   if (!signature) throw new BadRequestException("Confirm the manual signature first");
   const signedAt = pastPaymentDate(signature, "signedAt");
   const paidAt = pastPaymentDate(dto.paidAt, "paidAt");
-  const terms = commercialTerms(contract.price, contract.currency, contract.subscriptionTier, contract.paymentType ?? "FULL", contract.installmentCount ?? undefined, true);
+  const terms = commercialTerms(contract.price, contract.currency, contract.subscriptionTier, contract.paymentType ?? "FULL", contract.installmentCount ?? undefined, true, true);
   const schedule = installmentSchedule(contract.price, terms.installmentCount, paidAt);
   if (!new Prisma.Decimal(dto.amount).equals(schedule[0].amount)) throw new BadRequestException(`First payment must equal ${schedule[0].amount.toString()} ${contract.currency}`);
   const expert = expertUserId ? await tx.consultantProfile.findUnique({ where: { userId: expertUserId } }) : null;

@@ -7,7 +7,7 @@ import * as dotenv from "dotenv";
 import { useContainer } from "class-validator";
 import cookieParser from "cookie-parser";
 import { RedisIoAdapter } from "./common/websocket/redis-io.adapter";
-import { validateCorsOrigin } from "./configs/cors-origin";
+import { corsOptions } from "./configs/cors-origin";
 
 dotenv.config();
 
@@ -15,6 +15,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });
+  app.enableShutdownHooks();
   app.getHttpAdapter().getInstance().set("trust proxy", 1);
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
 
@@ -25,12 +26,7 @@ async function bootstrap() {
     app.useLogger(["fatal", "error"]);
   }
 
-  app.enableCors({
-    origin: validateCorsOrigin,
-    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  });
+  app.enableCors(corsOptions);
 
   app.use(cookieParser());
 

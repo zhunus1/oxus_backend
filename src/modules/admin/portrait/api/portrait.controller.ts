@@ -52,7 +52,7 @@ export class PortraitController {
   @ApiResponse({ status: 404, description: "Student portrait not found" })
   @Get(":id/full")
   async findFullProfile(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
-    return this.portraitService.findFullProfile(req.user.id, req.user.roleCode, id);
+    return this.portraitService.findFullProfile(req.user.id, id);
   }
 
   @ApiOperation({ summary: "Add a target program for this student (assigned expert or admin)" })
@@ -84,7 +84,7 @@ export class PortraitController {
   @ApiOperation({ summary: "Get audit log for student portrait" })
   @ApiResponse({ status: 200, description: "Audit logs fetched successfully" })
   @Get(":id/audit-log")
-  async findAuditLogs(@Param("id", ParseIntPipe) id: number) {
-    return this.portraitService.findAuditLogs(id);
+  async findAuditLogs(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.portraitService.findAuditLogs(req.user.id, id);
   }
 }
