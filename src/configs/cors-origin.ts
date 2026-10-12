@@ -1,3 +1,4 @@
+import { ForbiddenException } from "@nestjs/common";
 import type { CorsOptions } from "@nestjs/common/interfaces/external/cors-options.interface";
 
 type CorsCallback = (error: Error | null, allow?: boolean) => void;
@@ -28,7 +29,7 @@ export function validateCorsOrigin(origin: string | undefined, callback: CorsCal
     return;
   }
 
-  callback(new Error("Origin is not allowed by CORS"), false);
+  callback(new ForbiddenException("Origin is not allowed by CORS"), false);
 }
 
 export const corsOptions: CorsOptions = {

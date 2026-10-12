@@ -36,7 +36,9 @@
     "lint:documents-storage-runner": "eslint --config test/storage-runner-eslint.config.mjs test/run-student-document-storage.mjs test/student-document-storage-runner.test.mjs test/storage-runner-eslint.config.mjs",
     "test:documents-observation": "nest build && node test/run-document-observation.mjs",
     "documents:observe": "node test/document-observation-cli.mjs",
-    "lint:documents-observation": "eslint --config test/storage-runner-eslint.config.mjs test/document-observation-cli.mjs test/document-observation-cli.test.mjs test/run-document-observation.mjs"
+    "lint:documents-observation": "eslint --config test/storage-runner-eslint.config.mjs test/document-observation-cli.mjs test/document-observation-cli.test.mjs test/run-document-observation.mjs",
+    "test:documents-legacy-inventory": "node --test test/document-legacy-inventory.test.mjs",
+    "lint:documents-legacy-inventory": "eslint --config test/storage-runner-eslint.config.mjs deployment/audits/document-legacy-inventory.mjs test/document-legacy-inventory.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.946.0",

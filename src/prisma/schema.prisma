@@ -79,6 +79,7 @@ enum RequirementType {
   PORTFOLIO
   LANGUAGE_CERTIFICATE
   OTHER
+  DIPLOMA
 }
 
 enum SubscriptionTier {

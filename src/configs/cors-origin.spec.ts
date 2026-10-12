@@ -1,4 +1,4 @@
-import { Controller, Get, Req, Res, UseGuards, type INestApplication } from "@nestjs/common";
+import { Controller, Get, Post, Req, Res, UseGuards, type INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { JwtService } from "@nestjs/jwt";
 import cookieParser from "cookie-parser";
@@ -49,10 +49,16 @@ jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 const origin = "https://crm.example.test";
 const bytes = Buffer.from("%PDF-1.7\n%%EOF\n");
 const findUnique = jest.fn();
+const upload = jest.fn();
 
 @Controller("file")
 @UseGuards(JwtAuthGuard)
 class CorsFileController {
+  @Post()
+  upload(@Req() req: UserRequest) {
+    return upload(req.user.id);
+  }
+
   @Get()
   download(@Req() req: UserRequest, @Res() res: Response) {
     if (!req.user.id) throw new Error("Authenticated actor required");
@@ -83,6 +89,7 @@ describe("configured CORS middleware and unchanged JWT selection", () => {
 
   beforeEach(() => {
     findUnique.mockReset();
+    upload.mockReset();
     findUnique.mockResolvedValue({ deletedAt: null, role: { code: "ADMIN", deletedAt: null, permissions: [] } });
   });
 
@@ -125,15 +132,46 @@ describe("configured CORS middleware and unchanged JWT selection", () => {
     expect(findUnique).not.toHaveBeenCalled();
   });
 
-  it("rejects unlisted origins before authentication and returns no CORS permission headers", async () => {
+  it.each([
+    "https://unapproved.example.test",
+    "null",
+    "https://evil.test.oxusedu.com",
+    "https://expert.test.oxusedu.com.evil.com",
+    "http://crm.example.test",
+    "http://localhost:3002",
+  ])("rejects unlisted origin %s with 403 before authentication", async unapproved => {
     const out = await request(app.getHttpServer())
       .get("/file")
-      .set("Origin", "https://unapproved.example.test")
+      .set("Origin", unapproved)
       .set("Authorization", `Bearer ${token(11)}`)
-      .expect(500);
+      .expect(403);
     expect(out.headers["access-control-allow-origin"]).toBeUndefined();
     expect(out.headers["access-control-expose-headers"]).toBeUndefined();
     expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unlisted-origin cookie-authenticated simple form POST without a preflight", async () => {
+    await request(app.getHttpServer())
+      .post("/file")
+      .set("Origin", "https://unapproved.example.test")
+      .set("Cookie", `accessToken=${token(22)}`)
+      .type("form")
+      .send({ title: "synthetic" })
+      .expect(403);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unlisted-origin preflight with 403 and no allow-origin header", async () => {
+    const out = await request(app.getHttpServer())
+      .options("/file")
+      .set("Origin", "https://unapproved.example.test")
+      .set("Access-Control-Request-Method", "POST")
+      .set("Access-Control-Request-Headers", "authorization")
+      .expect(403);
+    expect(out.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
   });
 
   it("retains origin-free Bearer requests without synthesizing wildcard allow-origin", async () => {

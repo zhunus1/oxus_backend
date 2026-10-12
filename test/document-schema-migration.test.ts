@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,7 +23,9 @@ let directory: string | undefined;
 let created = false;
 let originalRows: Record<string, any>[];
 let originalConstraints: Record<string, any>[];
-let baselineCount: number;
+let migrationCount: number;
+let programId: number;
+let originalRequirements: Record<string, any>[];
 
 function prisma(args: string[]) {
   const result = spawnSync(process.execPath, ["node_modules/prisma/build/index.js", ...args], { env, encoding: "utf8" });
@@ -36,7 +38,7 @@ async function constraints() {
 }
 async function assertPreserved() {
   const rows = (await client.query('SELECT * FROM "Document" ORDER BY "id"')).rows;
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, originalRows.length);
   assert.deepEqual(
     rows.map(({ fileKey, deletedAt, ...old }) => {
       assert.equal(fileKey, null);
@@ -54,8 +56,10 @@ before(async () => {
   await client.connect();
   directory = await mkdtemp(join(tmpdir(), "oxus-document-phase2a-migrate-"));
   await cp(resolve("src/prisma/migrations"), join(directory, "migrations"), { recursive: true });
-  // Only remove the copied new migration; historical migrations in the repo are untouched.
-  await rm(join(directory, "migrations", migration), { recursive: true });
+  const migrations = (await readdir(resolve("src/prisma/migrations"), { withFileTypes: true })).filter(entry => entry.isDirectory());
+  migrationCount = migrations.length;
+  // Keep the copied baseline before the private-fields migration, excluding later migrations too.
+  for (const entry of migrations.filter(entry => entry.name >= migration)) await rm(join(directory, "migrations", entry.name), { recursive: true });
   const config = join(directory, "prisma.config.mjs");
   const prismaConfigModule = pathToFileURL(resolve("node_modules/prisma/config.js")).href;
   await writeFile(
@@ -64,7 +68,6 @@ before(async () => {
   );
   prisma(["migrate", "deploy", "--config", config]);
   assert.equal((await client.query(`SELECT count(*)::int AS count FROM information_schema.columns WHERE table_schema='public' AND table_name='Document'`)).rows[0].count, 11);
-  baselineCount = (await client.query('SELECT count(*)::int AS count FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')).rows[0].count;
   const role = (await client.query(`INSERT INTO "Role" ("code","name") VALUES ('STUDENT','Student') ON CONFLICT ("code") DO UPDATE SET "name"=EXCLUDED."name" RETURNING "id"`))
     .rows[0].id;
   const user = (
@@ -82,6 +85,7 @@ before(async () => {
       organisation,
     ])
   ).rows[0].id;
+  programId = program;
   const target = (
     await client.query(
       `INSERT INTO "TargetProgram" ("programTitle","intake","organisationId","programId","studentPortraitId","updatedAt") VALUES ('Migration program','Fall 2026',$1,$2,$3,CURRENT_TIMESTAMP) RETURNING "id"`,
@@ -91,6 +95,7 @@ before(async () => {
   for (const [type, status, version, targetId] of [
     ["PASSPORT", "APPROVED", 3, target],
     ["TRANSCRIPT", "NEEDS_REVISION", 2, null],
+    ["OTHER", "DRAFT", 1, target],
   ]) {
     await client.query(
       `INSERT INTO "Document" ("title","fileUrl","documentType","status","version","feedback","studentPortraitId","targetProgramId","createdAt","updatedAt") VALUES ($1,$2,$3::"RequirementType",$4::"DocumentStatus",$5,'Historical feedback',$6,$7,'2025-01-01','2025-02-01')`,
@@ -99,6 +104,10 @@ before(async () => {
   }
   originalRows = (await client.query('SELECT * FROM "Document" ORDER BY "id"')).rows;
   originalConstraints = await constraints();
+  await client.query('INSERT INTO "ProgramRequirement" ("programId","type","title","updatedAt") VALUES ($1,\'OTHER\',\'Historical other requirement\',CURRENT_TIMESTAMP)', [
+    programId,
+  ]);
+  originalRequirements = (await client.query('SELECT * FROM "ProgramRequirement" ORDER BY "id"')).rows;
 });
 
 after(async () => {
@@ -120,7 +129,7 @@ after(async () => {
   );
 });
 
-test("additive migration preserves both historical documents, values, dates and links; new fields are nullable NULL", async () => {
+test("additive migrations preserve historical documents, values, dates and links; new fields are nullable NULL", async () => {
   const sql = await readFile(`src/prisma/migrations/${migration}/migration.sql`, "utf8");
   assert(!/\b(DROP|DELETE|TRUNCATE|UPDATE)\b/i.test(sql));
   prisma(["migrate", "deploy"]);
@@ -149,7 +158,7 @@ test("second Prisma migrate deploy is a no-op and never damages data or reapplie
   const result = prisma(["migrate", "deploy"]);
   assert.match(result, /No pending migrations/);
   await assertPreserved();
-  assert.equal((await client.query('SELECT count(*)::int AS count FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')).rows[0].count, baselineCount + 1);
+  assert.equal((await client.query('SELECT count(*)::int AS count FROM "_prisma_migrations" WHERE finished_at IS NOT NULL')).rows[0].count, migrationCount);
   assert.equal(
     (await client.query('SELECT count(*)::int AS count FROM "_prisma_migrations" WHERE migration_name=$1 AND finished_at IS NOT NULL AND rolled_back_at IS NULL', [migration]))
       .rows[0].count,
@@ -159,4 +168,29 @@ test("second Prisma migrate deploy is a no-op and never damages data or reapplie
 
 test("deployed migration and current Prisma schema have no drift", () => {
   prisma(["migrate", "diff", "--from-config-datasource", "--to-schema", "src/prisma/schema.prisma", "--exit-code"]);
+});
+
+test("DIPLOMA extends the shared enum without changing OTHER documents or program requirements", async () => {
+  const sql = await readFile("src/prisma/migrations/20261012120000_requirement_type_diploma/migration.sql", "utf8");
+  assert(!/\b(DROP|DELETE|TRUNCATE|UPDATE)\b/i.test(sql));
+  await assertPreserved();
+  assert.deepEqual((await client.query('SELECT * FROM "ProgramRequirement" ORDER BY "id"')).rows, originalRequirements);
+  const labels = (await client.query("SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='RequirementType' ORDER BY enumsortorder")).rows;
+  assert.deepEqual(
+    labels.map(row => row.enumlabel),
+    ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER", "DIPLOMA"],
+  );
+  const document = (
+    await client.query(
+      'INSERT INTO "Document" ("title","fileUrl","documentType","studentPortraitId","updatedAt") VALUES (\'Synthetic diploma\',\'https://files.example.test/diploma\',\'DIPLOMA\',$1,CURRENT_TIMESTAMP) RETURNING "documentType"',
+      [originalRows[0].studentPortraitId],
+    )
+  ).rows[0];
+  const requirement = (
+    await client.query('INSERT INTO "ProgramRequirement" ("programId","type","title","updatedAt") VALUES ($1,\'DIPLOMA\',\'Diploma\',CURRENT_TIMESTAMP) RETURNING "type"', [
+      programId,
+    ])
+  ).rows[0];
+  assert.equal(document.documentType, "DIPLOMA");
+  assert.equal(requirement.type, "DIPLOMA");
 });

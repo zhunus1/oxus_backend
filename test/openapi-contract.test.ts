@@ -56,10 +56,33 @@ test("Document schemas describe exactly eleven required public fields with nulla
   assert.equal(dto.properties.targetProgramId.type, "integer");
   assert.equal(dto.properties.targetProgramId.nullable, true);
   assert.deepEqual(dto.properties.status.enum, ["DRAFT", "REVIEW", "NEEDS_REVISION", "APPROVED"]);
-  assert.deepEqual(dto.properties.documentType.enum, ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER"]);
+  assert.deepEqual(dto.properties.documentType.enum, ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER", "DIPLOMA"]);
   for (const field of ["id", "version", "studentPortraitId"]) assert.equal(dto.properties[field].type, "integer");
   for (const field of ["title", "fileUrl"]) assert.equal(dto.properties[field].type, "string");
   for (const field of ["createdAt", "updatedAt"]) assert.equal(dto.properties[field].format, "date-time");
+});
+
+test("DIPLOMA is accepted and documented across document and program requirement inputs", () => {
+  const { plainToInstance } = built("class-transformer");
+  const { validateSync } = built("class-validator");
+  for (const [path, name, field, values] of [
+    ["modules/document/api/dto/create-document.dto", "CreateDocumentDto", "documentType", { title: "Synthetic diploma" }],
+    ["modules/document/api/dto/staff-document.dto", "StaffCreateDocumentDto", "documentType", { title: "Synthetic diploma" }],
+    ["modules/document/api/dto/staff-document.dto", "StaffDocumentsQueryDto", "documentType", {}],
+    ["modules/program-requirement/api/dto/create-program-requirement.dto", "CreateProgramRequirementDto", "type", { title: "Diploma", isRequired: true, sortOrder: 1 }],
+    ["modules/program-requirement/api/dto/update-program-requirement.dto", "UpdateProgramRequirementDto", "type", {}],
+  ] as const) {
+    const dto = built(`./dist/src/${path}.js`)[name];
+    for (const type of ["DIPLOMA", "OTHER"]) assert.deepEqual(validateSync(plainToInstance(dto, { ...values, [field]: type })), []);
+    assert(validateSync(plainToInstance(dto, { ...values, [field]: "NOT_A_DOCUMENT_TYPE" })).some((error: any) => error.property === field));
+    if (doc.components.schemas[name]) assert(doc.components.schemas[name].properties[field].enum.includes("DIPLOMA"));
+  }
+  for (const path of ["/documents", "/expert/portraits/{portraitId}/documents"]) {
+    const type = operation(path, "post").requestBody.content["multipart/form-data"].schema.properties.documentType;
+    assert(type.enum.includes("DIPLOMA"));
+    assert(type.enum.includes("OTHER"));
+  }
+  assert(doc.components.schemas.ProgramRequirementEntity.properties.type.enum.includes("DIPLOMA"));
 });
 
 for (const values of [
