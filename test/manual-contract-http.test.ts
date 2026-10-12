@@ -278,6 +278,35 @@ test("all plan writers reject four or more installments without changing existin
   assert.equal((await prisma.contract.findUniqueOrThrow({ where: { id: created.body.id } })).installmentCount, 3);
 });
 
+test("persisted signed legacy lead drafts preserve four payments when creating the contract", async () => {
+  const f = await prepare({ paymentType: "INSTALLMENT", installmentCount: 3 });
+  const historical = { ...f.dto, paymentType: "INSTALLMENT", installmentCount: 4 };
+  // Represent a draft signed before the new limit, not an API way to create new terms.
+  const before = await prisma.leadContractDraft.update({ where: { leadId: f.lead.id }, data: { data: historical, signedAt: new Date(signedAt) } });
+  await http(expert, "patch", f.path)
+    .send({ ...f.dto, installmentCount: 2 })
+    .expect(409);
+  const result = await http(expert, "post", `${f.path}/confirm`).send({ paidAt, amount: 375000 }).expect(201);
+  assert.equal(result.body.contract.installmentCount, 4);
+  assert.equal(result.body.contract.installments.length, 4);
+  assert.ok(result.body.contract.installments.every((i: any) => Number(i.amount) === 375000));
+  const after = await prisma.leadContractDraft.findUniqueOrThrow({ where: { leadId: f.lead.id } });
+  assert.deepEqual(after.data, before.data);
+  assert.equal(after.signedAt?.getTime(), before.signedAt?.getTime());
+});
+
+test("a confirmation request signature cannot grandfather an unsigned four-payment draft", async () => {
+  const f = await prepare({ paymentType: "INSTALLMENT", installmentCount: 3 });
+  const data = { ...f.dto, paymentType: "INSTALLMENT", installmentCount: 4 };
+  await prisma.leadContractDraft.update({ where: { leadId: f.lead.id }, data: { data } });
+  await http(expert, "post", `${f.path}/signature`).send({ signedAt }).expect(400);
+  assert.equal((await prisma.leadContractDraft.findUniqueOrThrow({ where: { leadId: f.lead.id } })).signedAt, null);
+  await http(expert, "post", `${f.path}/confirm`).send({ signedAt, paidAt, amount: 375000 }).expect(400);
+  assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: f.lead.id } })).contractId, null);
+  assert.equal(await prisma.user.count({ where: { email: f.dto.email } }), 0);
+  assert.deepEqual((await prisma.leadContractDraft.findUniqueOrThrow({ where: { leadId: f.lead.id } })).data, data);
+});
+
 test("existing signed four-tranche plans keep their schedule and accept the last receipt", async () => {
   const existing = await user("STUDENT");
   const owner = await prisma.consultantProfile.findUniqueOrThrow({ where: { userId: expert } });

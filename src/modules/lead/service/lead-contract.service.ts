@@ -96,6 +96,10 @@ export class LeadContractService {
       const draft = await tx.leadContractDraft.findUnique({ where: { leadId } });
       if (!draft) throw new ConflictException("Prepare the contract first");
       if (draft.signedAt?.getTime() === signedAt.getTime()) return { lead, draft };
+      if (!draft.signedAt) {
+        const terms = draft.data as unknown as PrepareLeadContractDto;
+        commercialTerms(terms.price, terms.currency, terms.subscriptionTier, terms.paymentType, terms.installmentCount);
+      }
       await tx.leadActivity.create({ data: { leadId, actorUserId: expertId, type: "CONTRACT_MANUAL_SIGNATURE", metadata: { signedAt: dto.signedAt } } });
       return { lead, draft: await tx.leadContractDraft.update({ where: { leadId }, data: { signedAt } }) };
     });
@@ -118,7 +122,18 @@ export class LeadContractService {
         signedAt = signedAt ?? draft.signedAt?.toISOString();
         if (!signedAt) throw new BadRequestException("Confirm the manual signature first");
         const terms = draft.data as unknown as PrepareLeadContractDto;
-        const validatedTerms = commercialTerms(terms.price, terms.currency, terms.subscriptionTier, terms.paymentType, terms.installmentCount);
+        // Persisted signed terms stay binding; a signature supplied with this request
+        // must not lift the three-payment limit for an unsigned draft.
+        const preserveSignedTerms = Boolean(draft.signedAt);
+        const validatedTerms = commercialTerms(
+          terms.price,
+          terms.currency,
+          terms.subscriptionTier,
+          terms.paymentType,
+          terms.installmentCount,
+          preserveSignedTerms,
+          preserveSignedTerms,
+        );
         const expert = await tx.consultantProfile.findUniqueOrThrow({ where: { userId: expertId } });
         const { student, reused } = await this.createStudent(tx, lead, { ...terms, existingStudentId: dto.existingStudentId ?? terms.existingStudentId }, expert.id, password);
         const fullName = (person: { firstname: string; lastname: string; middlename?: string | null }) =>
