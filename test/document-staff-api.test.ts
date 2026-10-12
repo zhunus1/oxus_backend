@@ -254,6 +254,56 @@ test("ADMIN can upload for every existing portrait, including unassigned SCHOOLB
   }
 });
 
+test("imported private DOCX downloads preserve bytes and headers for assigned EXPERT, ADMIN and owning student", async () => {
+  const bytes = fixture("synthetic-legacy.docx");
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const key = `documents/${randomUUID()}`;
+  await storage.ensurePrivateBucket();
+  await client.send(new PutObjectCommand({ Bucket: `${config.AWS_BUCKET_NAME}-student-documents`, Key: key, Body: bytes, ContentType: mime, IfNoneMatch: "*" }));
+  // Fixture simulates an independently imported object; it never uses the upload API.
+  const doc = await repo.createPrivate({ title: "Synthetic imported DOCX", fileKey: key, documentType: "OTHER", studentPortraitId: portrait }, db);
+  for (const [actor, path] of [
+    [expert, `${base()}/${doc.id}/file`],
+    [admin, `${base()}/${doc.id}/file`],
+    [student, `/documents/${doc.id}/file`],
+  ] as const) {
+    const result = await binary(http(actor, "get", path)).expect(200);
+    assert.deepEqual(result.body, bytes);
+    assert.equal(result.headers["content-type"], mime);
+    assert.equal(result.headers["content-disposition"], `attachment; filename="document-${doc.id}.docx"`);
+    assert.equal(result.headers["cache-control"], "private, no-store");
+    assert.equal(result.headers["x-content-type-options"], "nosniff");
+    assert.equal(Number(result.headers["content-length"]), bytes.length);
+  }
+  const beforeCalls = calls;
+  await http(otherExpert, "get", `${base()}/${doc.id}/file`).expect(403);
+  await http(admin, "get", `${base(otherPortrait)}/${doc.id}/file`).expect(404);
+  await http(sales, "get", `${base()}/${doc.id}/file`).expect(403);
+  await request(app.getHttpServer()).get(`/api/v1/documents/${doc.id}/file`).expect(401);
+  await request(app.getHttpServer()).get(`/api/v1${base()}/${doc.id}/file`).expect(401);
+  assert.equal(calls, beforeCalls);
+  const anonymous = await fetch(new URL(`${config.AWS_BUCKET_NAME}-student-documents/${key}`, endpoint));
+  await anonymous.body?.cancel();
+  assert.equal(anonymous.status, 403);
+});
+
+test("DOCX private download support does not permit new staff or student DOCX uploads", async () => {
+  const bytes = fixture("synthetic-legacy.docx");
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const beforeCalls = calls;
+  for (const [actor, path] of [
+    [expert, base()],
+    [student, "/documents"],
+  ] as const) {
+    await http(actor, "post", path)
+      .field("title", "Rejected new DOCX")
+      .field("documentType", "OTHER")
+      .attach("file", bytes, { filename: "synthetic.docx", contentType: mime })
+      .expect(400);
+  }
+  assert.equal(calls, beforeCalls);
+});
+
 const routes = ["list", "detail", "upload", "download", "version", "metadata", "delete"];
 for (const role of ["STUDENT", "SCHOOLBOY", "SALES_MANAGER", "SUPPORT", "foreign EXPERT", "no JWT"])
   for (const route of routes)

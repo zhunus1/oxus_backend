@@ -11,7 +11,7 @@ import { DocumentService } from "../service/document.service";
 import { CreateDocumentDto } from "./dto/create-document.dto";
 import { ReviewDocumentDto } from "./dto/review-document.dto";
 import { StudentPortraitService } from "src/modules/studentportrait/service/studentportrait.service";
-import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES } from "src/common/utils/minio/student-document-file";
+import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES, STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES } from "src/common/utils/minio/student-document-file";
 import { DocumentMutationGuard } from "./document-mutation.guard";
 import type { Response } from "express";
 import { streamDocumentResponse } from "./document-stream-response";
@@ -82,16 +82,17 @@ export class DocumentController {
 
   @ApiOperation({
     summary: "Download an authorized private document",
-    description: "Send JWT credentials explicitly. Legacy documents retain their existing public fileUrl and return 404 here.",
+    description:
+      "Send JWT credentials explicitly. Private documents support PDF/JPEG/PNG and imported DOCX attachments. Unmigrated legacy documents retain their public fileUrl and return 404 here.",
   })
-  @ApiProduces("application/pdf", "image/jpeg", "image/png")
+  @ApiProduces(...STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)
   @ApiResponse({
     status: 200,
     description: "Binary attachment",
     schema: { type: "string", format: "binary" },
     headers: {
       "Content-Disposition": { description: "attachment with a server-generated filename", schema: { type: "string" } },
-      "Content-Type": { description: "Verified PDF/JPEG/PNG metadata", schema: { type: "string" } },
+      "Content-Type": { description: "Allowed PDF/JPEG/PNG or imported DOCX metadata", schema: { type: "string" } },
       "Content-Length": { description: "Positive integer, at most 10 MiB", schema: { type: "integer" } },
       "Cache-Control": { schema: { type: "string", example: "private, no-store" } },
       "X-Content-Type-Options": { schema: { type: "string", example: "nosniff" } },
