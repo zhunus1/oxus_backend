@@ -22,6 +22,7 @@ const PrismaService = klass("database/prisma.service", "PrismaService");
 const DocumentService = klass("modules/document/service/document.service", "DocumentService");
 const DocumentRepository = klass("modules/document/repository/document.repository", "DocumentRepository");
 const DocumentController = klass("modules/document/api/document.controller", "DocumentController");
+const StaffDocumentController = klass("modules/document/api/staff-document.controller", "StaffDocumentController");
 const Recovery = klass("modules/document/service/document-storage-recovery.service", "DocumentStorageRecoveryService");
 const Access = klass("common/authorization/student-document-access.service", "StudentDocumentAccessService");
 const RequirementService = klass("modules/program-requirement/service/program-requirement.service", "ProgramRequirementService");
@@ -148,7 +149,17 @@ before(async () => {
   foreignTarget = (await prisma.targetProgram.create({ data: { ...targetData, studentPortraitId: schoolPortrait } })).id;
   await prisma.programRequirement.create({ data: { programId: program.id, type: "PASSPORT", title: "Passport required" } });
   const module = await Test.createTestingModule({
-    controllers: [DocumentController, RequirementController, PortraitController, TargetController, DashboardController, ExpertStudentsController, AdminController, AuthController],
+    controllers: [
+      DocumentController,
+      StaffDocumentController,
+      RequirementController,
+      PortraitController,
+      TargetController,
+      DashboardController,
+      ExpertStudentsController,
+      AdminController,
+      AuthController,
+    ],
     providers: [
       { provide: AuthService, useValue: new AuthService(new UsersService(new UsersRepository(prisma), journey), jwt, {}, new CookieService(), {}, {}) },
       { provide: PrismaService, useValue: prisma },
@@ -186,6 +197,45 @@ after(async () => {
   await prisma.$disconnect();
   if (previousSecret === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = previousSecret;
+});
+
+test("ADMIN and assigned EXPERT can upload DIPLOMA, filter it and satisfy a diploma requirement", async () => {
+  const program = await prisma.targetProgram.findUniqueOrThrow({ where: { id: target } });
+  const requirement = await http(admin, "post", `/programs/${program.programId}/requirements`)
+    .send({ type: "DIPLOMA", title: "Diploma", isRequired: true, sortOrder: 1 })
+    .expect(201);
+  assert.equal(requirement.body.type, "DIPLOMA");
+  const path = `/expert/portraits/${portrait}/documents`;
+  const file = readFileSync(resolve("test/fixtures/student-documents/blank.pdf"));
+  const callsBeforeDeniedUpload = uploadCalls;
+  await http(otherExpert, "post", path).field("title", "Diploma").field("documentType", "DIPLOMA").attach("file", file, "diploma.pdf").expect(403);
+  assert.equal(uploadCalls, callsBeforeDeniedUpload);
+  const ids: number[] = [];
+  for (const actor of [admin, expert]) {
+    const response = await http(actor, "post", path)
+      .field("title", "Synthetic diploma")
+      .field("documentType", "DIPLOMA")
+      .field("targetProgramId", String(target))
+      .attach("file", file, "diploma.pdf")
+      .expect(201);
+    assert.equal(response.body.documentType, "DIPLOMA");
+    assertPublicDocument(response.body);
+    ids.push(response.body.id);
+    assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: response.body.id } })).documentType, "DIPLOMA");
+    const detail = await http(actor, "get", `${path}/${response.body.id}`).expect(200);
+    assert.equal(detail.body.documentType, "DIPLOMA");
+    const list = await http(actor, "get", `${path}?documentType=DIPLOMA`).expect(200);
+    assert(list.body.data.some((doc: any) => doc.id === response.body.id));
+    assert(list.body.data.every((doc: any) => doc.documentType === "DIPLOMA"));
+  }
+  for (const actor of [student, expert, admin]) {
+    const status = await http(actor, "get", `/target-programs/${target}/requirements-status`).expect(200);
+    const row = status.body.find((row: any) => row.requirementId === requirement.body.id);
+    assert.equal(row.type, "DIPLOMA");
+    assert.equal(row.isSubmitted, true);
+    assert(ids.includes(row.documentId));
+    assertNoInternalFields(status.body);
+  }
 });
 
 for (const [name, actor, owner, expected] of [
