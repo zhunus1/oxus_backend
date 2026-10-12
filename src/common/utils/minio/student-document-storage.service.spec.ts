@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { MinioService } from "./minio.service";
 import { StudentDocumentStorageService } from "./student-document-storage.service";
-import { STUDENT_DOCUMENT_MAX_BYTES, STUDENT_DOCUMENT_MULTIPART_LIMITS, validateStudentDocumentFile } from "./student-document-file";
+import { STUDENT_DOCUMENT_DOCX_MIME, STUDENT_DOCUMENT_MAX_BYTES, STUDENT_DOCUMENT_MULTIPART_LIMITS, validateStudentDocumentFile } from "./student-document-file";
 
 const acl = { Owner: { ID: "owner" }, Grants: [{ Grantee: { Type: "CanonicalUser", ID: "owner" }, Permission: "FULL_CONTROL" }] };
 const missing = (name: string) => Object.assign(new Error("secret endpoint/credentials"), { name, $metadata: { httpStatusCode: 404 } });
@@ -148,6 +148,10 @@ describe("student document storage failures and isolation", () => {
 
   it("rejects invalid files before any storage I/O", async () => {
     await expect(service.uploadPrivateDocument(undefined)).rejects.toBeInstanceOf(BadRequestException);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("rejects new DOCX uploads before bucket checks or object writes", async () => {
+    await expect(service.uploadPrivateDocument(fixture("synthetic-legacy.docx", STUDENT_DOCUMENT_DOCX_MIME))).rejects.toBeInstanceOf(BadRequestException);
     expect(send).not.toHaveBeenCalled();
   });
   it.each(["storage/documents/a", "../x", "https://example.test/file", key + "\n", key.toUpperCase(), "contracts/" + randomUUID(), "documents/" + "0".repeat(36)])(
@@ -316,11 +320,28 @@ describe("student document storage failures and isolation", () => {
     await expect(service.streamPrivateDocument(key)).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(send.mock.calls.some(([command]) => command instanceof GetObjectCommand)).toBe(false);
   });
-  it("destroys a body rejected by metadata validation", async () => {
+  it.each(["text/html", "application/zip", "application/vnd.ms-word.document.macroEnabled.12"])("destroys a body with unsupported download MIME %s", async mime => {
     const body = new Readable({ read() {} });
-    send.mockImplementation(command => (command instanceof GetObjectCommand ? Promise.resolve({ Body: body, ContentType: "text/html", ContentLength: 1 }) : successful(command)));
+    send.mockImplementation(command => (command instanceof GetObjectCommand ? Promise.resolve({ Body: body, ContentType: mime, ContentLength: 1 }) : successful(command)));
     await expect(service.streamPrivateDocument(key)).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(body.destroyed).toBe(true);
+  });
+
+  it("streams an imported DOCX unchanged after private bucket and object ACL checks", async () => {
+    const file = fixture("synthetic-legacy.docx", STUDENT_DOCUMENT_DOCX_MIME);
+    send.mockImplementation(command =>
+      command instanceof GetObjectCommand
+        ? Promise.resolve({ Body: Readable.from(file.buffer), ContentType: STUDENT_DOCUMENT_DOCX_MIME, ContentLength: file.size })
+        : successful(command),
+    );
+    const result = await service.streamPrivateDocument(key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.stream) chunks.push(chunk);
+    expect(Buffer.concat(chunks)).toEqual(file.buffer);
+    expect(result.contentType).toBe(STUDENT_DOCUMENT_DOCX_MIME);
+    expect(result.size).toBe(file.size);
+    expect(send.mock.calls.some(([command]) => command instanceof GetObjectAclCommand)).toBe(true);
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
   });
 
   it.each([

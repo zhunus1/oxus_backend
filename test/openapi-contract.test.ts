@@ -42,7 +42,8 @@ test("private documents advertise JWT multipart limits and authenticated binary 
   }
   assert(replacement.responses["409"]);
   const download = operation("/documents/{id}/file");
-  for (const mime of ["application/pdf", "image/jpeg", "image/png"]) assert.equal(download.responses["200"].content[mime].schema.format, "binary");
+  for (const mime of ["application/pdf", "image/jpeg", "image/png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"])
+    assert.equal(download.responses["200"].content[mime].schema.format, "binary");
   for (const header of ["Content-Disposition", "Content-Type", "Content-Length", "Cache-Control", "X-Content-Type-Options"]) assert(download.responses["200"].headers[header]);
 });
 
@@ -205,7 +206,8 @@ test("exact seven staff routes preserve bearer, bounded integer path IDs and bin
   }
   assert.deepEqual(actual.sort(), expected.sort());
   const binary = doc.paths[root + "/{documentId}/file"].get;
-  for (const mime of ["application/pdf", "image/jpeg", "image/png"]) assert.equal(binary.responses["200"].content[mime].schema.format, "binary");
+  for (const mime of ["application/pdf", "image/jpeg", "image/png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"])
+    assert.equal(binary.responses["200"].content[mime].schema.format, "binary");
   assert.deepEqual(binary.responses["200"].headers["Content-Length"].schema, { type: "integer", minimum: 1, maximum: 10485760 });
   for (const header of ["Content-Disposition", "Cache-Control", "X-Content-Type-Options"]) assert.ok(binary.responses["200"].headers[header]);
   const replace = doc.paths[root + "/{documentId}/new-version"].patch;

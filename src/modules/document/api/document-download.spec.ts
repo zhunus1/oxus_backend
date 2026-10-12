@@ -6,6 +6,7 @@ import type { DocumentService } from "../service/document.service";
 import type { StudentPortraitService } from "src/modules/studentportrait/service/studentportrait.service";
 import type { UserRequest } from "src/modules/admin/auth/api/dtos/user-request";
 import type { Response } from "express";
+import { STUDENT_DOCUMENT_DOCX_MIME } from "src/common/utils/minio/student-document-file";
 
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 jest.mock("generated/prisma/client", () => ({ RequirementType: { PASSPORT: "PASSPORT" }, DocumentStatus: { APPROVED: "APPROVED", NEEDS_REVISION: "NEEDS_REVISION" } }));
@@ -80,5 +81,28 @@ describe("bounded private document HTTP streaming", () => {
     expect(body.destroyed).toBe(true);
     expect(res.setHeader).not.toHaveBeenCalled();
     expect(res.json).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["application/pdf", "pdf"],
+    ["image/jpeg", "jpg"],
+    ["image/png", "png"],
+    [STUDENT_DOCUMENT_DOCX_MIME, "docx"],
+  ])("serves %s as a private attachment with .%s and no original filename", async (contentType, extension) => {
+    const res = response();
+    const req = Object.assign(new EventEmitter(), { user: { id: 1 }, aborted: false });
+    const body = new Readable({ read() {} });
+    jest.spyOn(body, "pipe").mockImplementation(destination => destination);
+    const controller = new DocumentController(
+      { download: jest.fn().mockResolvedValue({ stream: body, contentType, size: 123 }) } as unknown as DocumentService,
+      {} as StudentPortraitService,
+    );
+    await controller.download(req as unknown as UserRequest, 42, res as unknown as Response);
+    expect(res.setHeader).toHaveBeenCalledWith("Content-Disposition", `attachment; filename="document-42.${extension}"`);
+    expect(res.setHeader).toHaveBeenCalledWith("Content-Type", contentType);
+    expect(res.setHeader).toHaveBeenCalledWith("Content-Length", 123);
+    expect(res.setHeader).toHaveBeenCalledWith("Cache-Control", "private, no-store");
+    expect(res.setHeader).toHaveBeenCalledWith("X-Content-Type-Options", "nosniff");
+    res.emit("finish");
+    expect(body.destroyed).toBe(true);
   });
 });

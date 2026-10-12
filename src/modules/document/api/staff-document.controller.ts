@@ -8,7 +8,7 @@ import { JwtAuthGuard } from "src/modules/admin/auth/rbac/auth.guard";
 import { RolesGuard } from "src/modules/admin/auth/rbac/roles.guard";
 import { Roles } from "src/modules/admin/auth/rbac/roles.decorator";
 import type { UserRequest } from "src/modules/admin/auth/api/dtos/user-request";
-import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES } from "src/common/utils/minio/student-document-file";
+import { STUDENT_DOCUMENT_MULTIPART_LIMITS, STUDENT_DOCUMENT_MAX_BYTES, STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES } from "src/common/utils/minio/student-document-file";
 import { DocumentService } from "../service/document.service";
 import { StaffCreateDocumentDto, StaffDocumentsQueryDto, StaffDocumentSnapshotDto, StaffDocumentIdPipe, StaffUpdateDocumentDto } from "./dto/staff-document.dto";
 import { DocumentEntity } from "./dto/document.entity";
@@ -101,8 +101,11 @@ export class StaffDocumentController {
 
   @Get(":documentId/file")
   @ApiParam({ name: "documentId", schema: staffIdSchema })
-  @ApiOperation({ summary: "Stream an authorized private document; legacy returns 404" })
-  @ApiProduces("application/pdf", "image/jpeg", "image/png")
+  @ApiOperation({
+    summary: "Stream an authorized private document",
+    description: "PDF/JPEG/PNG and imported DOCX attachments. Unmigrated legacy documents return 404. New uploads remain PDF/JPEG/PNG.",
+  })
+  @ApiProduces(...STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)
   @ApiResponse({
     status: 200,
     schema: { type: "string", format: "binary" },

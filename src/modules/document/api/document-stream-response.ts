@@ -2,14 +2,14 @@ import { ServiceUnavailableException } from "@nestjs/common";
 import type { Response } from "express";
 import type { Readable } from "node:stream";
 import type { UserRequest } from "src/modules/admin/auth/api/dtos/user-request";
-import type { StudentDocumentMime } from "src/common/utils/minio/student-document-file";
+import { studentDocumentDownloadExtension, type StudentDocumentDownloadMime } from "src/common/utils/minio/student-document-file";
 
 /** Shared authenticated binary responder; caller performs portrait/document authorization. */
 export async function streamDocumentResponse(
   req: UserRequest,
   res: Response,
   id: number,
-  read: (signal: AbortSignal) => Promise<{ stream: Readable; contentType: StudentDocumentMime; size: number }>,
+  read: (signal: AbortSignal) => Promise<{ stream: Readable; contentType: StudentDocumentDownloadMime; size: number }>,
 ) {
   const abort = new AbortController();
   let stream: Readable | undefined;
@@ -45,10 +45,7 @@ export async function streamDocumentResponse(
       cleanup();
       return;
     }
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="document-${id}.${result.contentType === "application/pdf" ? "pdf" : result.contentType === "image/png" ? "png" : "jpg"}"`,
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="document-${id}.${studentDocumentDownloadExtension(result.contentType)}"`);
     res.setHeader("Content-Type", result.contentType);
     res.setHeader("Content-Length", result.size);
     res.setHeader("Cache-Control", "private, no-store");

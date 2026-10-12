@@ -4,6 +4,24 @@ import type { MulterOptions } from "@nestjs/platform-express/multer/interfaces/m
 export const STUDENT_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const STUDENT_DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png"] as const;
 export type StudentDocumentMime = (typeof STUDENT_DOCUMENT_MIME_TYPES)[number];
+// Imported legacy DOCX can be downloaded; new uploads retain their existing formats.
+export const STUDENT_DOCUMENT_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES = [...STUDENT_DOCUMENT_MIME_TYPES, STUDENT_DOCUMENT_DOCX_MIME] as const;
+export type StudentDocumentDownloadMime = (typeof STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)[number];
+const downloadExtensions: Record<StudentDocumentDownloadMime, string> = {
+  "application/pdf": "pdf",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  [STUDENT_DOCUMENT_DOCX_MIME]: "docx",
+};
+
+export function isStudentDocumentDownloadMime(value: unknown): value is StudentDocumentDownloadMime {
+  return STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES.some(mime => mime === value);
+}
+
+export function studentDocumentDownloadExtension(mime: StudentDocumentDownloadMime): string {
+  return downloadExtensions[mime];
+}
 
 // Phase 2B-2 must pass these limits to FileInterceptor before multipart buffering.
 export const STUDENT_DOCUMENT_MULTIPART_LIMITS: NonNullable<MulterOptions["limits"]> = Object.freeze({ fileSize: STUDENT_DOCUMENT_MAX_BYTES, files: 1 });

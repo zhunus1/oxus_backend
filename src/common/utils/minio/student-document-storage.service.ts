@@ -14,7 +14,7 @@ import type { GetBucketAclCommandOutput } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import { PassThrough, Readable } from "node:stream";
 import { MinioService } from "./minio.service";
-import { isStudentDocumentMime, STUDENT_DOCUMENT_MAX_BYTES, validateStudentDocumentFile } from "./student-document-file";
+import { isStudentDocumentDownloadMime, STUDENT_DOCUMENT_MAX_BYTES, validateStudentDocumentFile } from "./student-document-file";
 
 export const STUDENT_DOCUMENT_KEY_PATTERN = /^documents\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -138,7 +138,7 @@ export class StudentDocumentStorageService {
       const result = await client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
       if (result.Body instanceof Readable) body = result.Body;
       const size = result.ContentLength;
-      if (!body || !isStudentDocumentMime(result.ContentType) || typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0 || size > STUDENT_DOCUMENT_MAX_BYTES)
+      if (!body || !isStudentDocumentDownloadMime(result.ContentType) || typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0 || size > STUDENT_DOCUMENT_MAX_BYTES)
         throw new Error("Invalid object metadata");
       const stream = new PassThrough();
       body.once("error", () => stream.destroy(this.failure("stream")));
