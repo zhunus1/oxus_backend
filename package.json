@@ -70,6 +70,7 @@
     "class-validator": "^0.14.3",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.2.3",
+    "fast-xml-parser": "5.7.3",
     "jsonrepair": "^3.14.0",
     "multer": "2.4.0",
     "nanoid": "^5.1.6",

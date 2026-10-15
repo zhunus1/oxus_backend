@@ -29,7 +29,10 @@ export class SalesLeadController {
 
   @Get("leads")
   @Permissions(LEAD_PERMISSION.READ_UNASSIGNED)
-  @ApiOperation({ summary: "List leads visible to the current Sales Manager" })
+  @ApiOperation({
+    summary: "List leads visible to the current Sales Manager",
+    description: "Each lead includes city from its latest questionnaire submission, or null when no city was provided.",
+  })
   list(@Req() req: UserRequest, @Query() query: SalesLeadQueryDto) {
     return this.service.list(req.user.id, query);
   }

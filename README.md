@@ -107,7 +107,13 @@ Deployment scripts and release verification live in `deployment/`. Before activa
 
 ## Sales Manager CRM
 
+`GET /api/v1/sales/leads` includes a nullable `city` on each list item, derived from the latest submission's city answer. Manual v2 questionnaire snapshots and legacy calculator answers are supported; leads without a city return `null`. The existing submission summary and pagination are unchanged.
+
 Current integration and operational guides are listed in [docs](docs/README.md), including [expert call email notifications](docs/lead-call-notifications.md).
+
+Student document uploads and replacements support PDF, JPEG, PNG and DOCX up to **50 MiB (52,428,800 bytes)** for both student and staff routes. `STUDENT_PHOTO` represents a student photo (3×4); it is a document category and does not enforce image dimensions. Apply migration `20261015120000_requirement_type_student_photo` before using this type. Reverse proxies must allow a multipart body larger than 50 MiB; the repository's Test Nginx template already allows 128 MiB.
+
+Document uploads remain buffered, with a shared admission limit of **four in-flight uploads per backend process** across student/staff create and replacement routes. Excess requests receive `503` before multipart parsing and should be retried later. A disconnected client does not release a slot while its upload is still being processed. DOCX checks ZIP integrity, required OOXML parts and well-formed XML; encrypted, macro-enabled and ZIP64 packages are unsupported. Analysis is bounded to 2,048 ZIP entries, 50 MiB per expanded entry, 100 MiB total expanded data, 4 MiB per XML part, 8 MiB total XML, 50,000 XML elements and 128 nesting levels. Submitted filenames do not determine the stored type or download extension; MIME and validated content do.
 
 ### Frontend-calculated manual lead results
 

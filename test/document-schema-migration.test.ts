@@ -170,27 +170,29 @@ test("deployed migration and current Prisma schema have no drift", () => {
   prisma(["migrate", "diff", "--from-config-datasource", "--to-schema", "src/prisma/schema.prisma", "--exit-code"]);
 });
 
-test("DIPLOMA extends the shared enum without changing OTHER documents or program requirements", async () => {
-  const sql = await readFile("src/prisma/migrations/20261012120000_requirement_type_diploma/migration.sql", "utf8");
-  assert(!/\b(DROP|DELETE|TRUNCATE|UPDATE)\b/i.test(sql));
+test("DIPLOMA and STUDENT_PHOTO extend the shared enum without changing existing documents or requirements", async () => {
+  for (const migration of ["20261012120000_requirement_type_diploma", "20261015120000_requirement_type_student_photo"]) {
+    const sql = await readFile(`src/prisma/migrations/${migration}/migration.sql`, "utf8");
+    assert(!/\b(DROP|DELETE|TRUNCATE|UPDATE)\b/i.test(sql));
+  }
   await assertPreserved();
   assert.deepEqual((await client.query('SELECT * FROM "ProgramRequirement" ORDER BY "id"')).rows, originalRequirements);
   const labels = (await client.query("SELECT enumlabel FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='RequirementType' ORDER BY enumsortorder")).rows;
   assert.deepEqual(
     labels.map(row => row.enumlabel),
-    ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER", "DIPLOMA"],
+    ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER", "DIPLOMA", "STUDENT_PHOTO"],
   );
-  const document = (
-    await client.query(
-      'INSERT INTO "Document" ("title","fileUrl","documentType","studentPortraitId","updatedAt") VALUES (\'Synthetic diploma\',\'https://files.example.test/diploma\',\'DIPLOMA\',$1,CURRENT_TIMESTAMP) RETURNING "documentType"',
-      [originalRows[0].studentPortraitId],
-    )
-  ).rows[0];
-  const requirement = (
-    await client.query('INSERT INTO "ProgramRequirement" ("programId","type","title","updatedAt") VALUES ($1,\'DIPLOMA\',\'Diploma\',CURRENT_TIMESTAMP) RETURNING "type"', [
-      programId,
-    ])
-  ).rows[0];
-  assert.equal(document.documentType, "DIPLOMA");
-  assert.equal(requirement.type, "DIPLOMA");
+  for (const type of ["DIPLOMA", "STUDENT_PHOTO"]) {
+    const document = (
+      await client.query(
+        'INSERT INTO "Document" ("title","fileUrl","documentType","studentPortraitId","updatedAt") VALUES ($1,$2,$3,$4,CURRENT_TIMESTAMP) RETURNING "documentType"',
+        [`Synthetic ${type}`, `https://files.example.test/${type}`, type, originalRows[0].studentPortraitId],
+      )
+    ).rows[0];
+    const requirement = (
+      await client.query('INSERT INTO "ProgramRequirement" ("programId","type","title","updatedAt") VALUES ($1,$2,$3,CURRENT_TIMESTAMP) RETURNING "type"', [programId, type, type])
+    ).rows[0];
+    assert.equal(document.documentType, type);
+    assert.equal(requirement.type, type);
+  }
 });

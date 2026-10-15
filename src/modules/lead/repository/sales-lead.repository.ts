@@ -5,6 +5,7 @@ import { SalesLeadQueryDto } from "../api/dto/sales/sales-lead-query.dto";
 import { leadTransaction } from "../domain/lead-transaction";
 import { leadStatusUpdate } from "../domain/lead-status";
 import { LEAD_ACTIVITY } from "../domain/lead.constants";
+import { CITY_ANSWER_JSON_PATH, leadCityFromAnswer } from "../domain/lead-city";
 
 const salesManagerSelect = {
   id: true,
@@ -98,7 +99,19 @@ export class SalesLeadRepository {
       this.prisma.lead.count({ where }),
     ]);
 
-    return { data, total };
+    const submissionIds = data.flatMap(lead => lead.submissions.map(submission => submission.id));
+    // Project only the city answer in PostgreSQL, rather than loading every questionnaire into the list.
+    const cityAnswers = submissionIds.length
+      ? await this.prisma.$queryRaw<{ id: number; answer: Prisma.JsonValue | null; locale: string | null }[]>(Prisma.sql`
+          SELECT id, COALESCE(
+            jsonb_path_query_first("normalizedPayload" -> 'questionnaire', ${CITY_ANSWER_JSON_PATH}::jsonpath),
+            jsonb_path_query_first("rawPayload", ${CITY_ANSWER_JSON_PATH}::jsonpath)
+          ) AS answer, COALESCE("rawPayload" ->> 'locale', "normalizedPayload" ->> 'preferredLanguage') AS locale
+          FROM public."LeadSubmission" WHERE id IN (${Prisma.join(submissionIds)})
+        `)
+      : [];
+    const cities = new Map(cityAnswers.map(row => [row.id, leadCityFromAnswer(row.answer, row.locale)]));
+    return { data: data.map(lead => ({ ...lead, city: cities.get(lead.submissions[0]?.id) ?? null })), total };
   }
 
   /** Counts visible leads by status in one query and returns zero for empty statuses. */

@@ -21,6 +21,7 @@ describe("student document validation", () => {
     ["blank.pdf", "application/pdf"],
     ["pixel.jpg", "image/jpeg"],
     ["pixel.png", "image/png"],
+    ["synthetic-legacy.docx", STUDENT_DOCUMENT_DOCX_MIME],
   ])("accepts a structurally complete %s", (name, mime) => {
     expect(validateStudentDocumentFile(fixture(name, mime)).contentType).toBe(mime);
   });
@@ -119,7 +120,7 @@ describe("student document validation", () => {
     expect(() => validateStudentDocumentFile(file)).not.toThrow("private path");
   });
 
-  it("accepts exactly 10 MiB and exports pre-buffer multipart limits", () => {
+  it("accepts exactly 50 MiB and exports pre-buffer multipart limits", () => {
     const buffer = Buffer.alloc(STUDENT_DOCUMENT_MAX_BYTES, 32);
     buffer.write("%PDF-1.7\n");
     buffer.write("%%EOF", buffer.length - 5);
@@ -150,9 +151,13 @@ describe("student document storage failures and isolation", () => {
     await expect(service.uploadPrivateDocument(undefined)).rejects.toBeInstanceOf(BadRequestException);
     expect(send).not.toHaveBeenCalled();
   });
-  it("rejects new DOCX uploads before bucket checks or object writes", async () => {
-    await expect(service.uploadPrivateDocument(fixture("synthetic-legacy.docx", STUDENT_DOCUMENT_DOCX_MIME))).rejects.toBeInstanceOf(BadRequestException);
-    expect(send).not.toHaveBeenCalled();
+  it("uploads structurally valid DOCX with the correct MIME and unchanged bytes", async () => {
+    const file = fixture("synthetic-legacy.docx", STUDENT_DOCUMENT_DOCX_MIME);
+    const result = await service.uploadPrivateDocument(file);
+    expect(result.contentType).toBe(STUDENT_DOCUMENT_DOCX_MIME);
+    const put = send.mock.calls.find(([command]) => command instanceof PutObjectCommand)?.[0];
+    expect(put.input.ContentType).toBe(STUDENT_DOCUMENT_DOCX_MIME);
+    expect(put.input.Body).toEqual(file.buffer);
   });
   it.each(["storage/documents/a", "../x", "https://example.test/file", key + "\n", key.toUpperCase(), "contracts/" + randomUUID(), "documents/" + "0".repeat(36)])(
     "rejects foreign or malformed key %s before I/O",
@@ -382,7 +387,7 @@ describe("student document storage failures and isolation", () => {
     expect(result.contentType).toBe("application/pdf");
     const chunks: Buffer[] = [];
     for await (const chunk of result.stream) chunks.push(chunk);
-    expect(Buffer.concat(chunks)).toEqual(bytes);
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
     expect(body.readableEnded).toBe(true);
     expect(body.destroyed).toBe(true);
   });

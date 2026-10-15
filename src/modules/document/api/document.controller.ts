@@ -17,6 +17,7 @@ import type { Response } from "express";
 import { streamDocumentResponse } from "./document-stream-response";
 import { RequirementType } from "generated/prisma/client";
 import { StudentDocumentCreateInputInterceptor } from "./student-document-create-input.interceptor";
+import { DocumentUploadCapacityInterceptor } from "./document-upload-capacity.interceptor";
 
 // Multer 2.4 applies inclusive file/part limits; no Busboy sentinels are needed.
 const studentMultipartLimits = { ...STUDENT_DOCUMENT_MULTIPART_LIMITS, fileSize: STUDENT_DOCUMENT_MAX_BYTES, fieldNestingDepth: 0 };
@@ -29,7 +30,7 @@ const uploadBody = {
     type: "object",
     required: ["file", "title", "documentType"],
     properties: {
-      file: { type: "string", format: "binary", description: "One non-empty PDF/JPEG/PNG, at most 10 MiB; MIME and bytes must match" },
+      file: { type: "string", format: "binary", description: "One non-empty PDF/JPEG/PNG/DOCX, at most 50 MiB; MIME and bytes must match" },
       title: { type: "string" },
       documentType: { type: "string", enum: Object.values(RequirementType) },
       targetProgramId: { type: "integer" },
@@ -42,8 +43,8 @@ const uploadBody = {
 @ApiResponse({ status: 400, description: "Invalid input or document bytes" })
 @ApiResponse({ status: 401, description: "JWT required or account disabled" })
 @ApiResponse({ status: 404, description: "Active document or private object not found" })
-@ApiResponse({ status: 413, description: "File exceeds 10 MiB" })
-@ApiResponse({ status: 503, description: "Private storage unavailable or timed out" })
+@ApiResponse({ status: 413, description: "File exceeds 50 MiB" })
+@ApiResponse({ status: 503, description: "Private storage unavailable, timed out, or upload capacity busy" })
 @UseGuards(JwtAuthGuard)
 @Controller("documents")
 export class DocumentController {
@@ -64,7 +65,7 @@ export class DocumentController {
   @ApiResponse({ status: 409, description: "Document access changed concurrently; reload before uploading" })
   @ApiResponse({ status: 403, description: "Document upload access denied" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentCreateLimits }), StudentDocumentCreateInputInterceptor)
+  @UseInterceptors(DocumentUploadCapacityInterceptor, MulterExceptionInterceptor, FileInterceptor("file", { limits: studentCreateLimits }), StudentDocumentCreateInputInterceptor)
   @Post()
   async upload(@Req() req: UserRequest, @UploadedFile() file: Express.Multer.File, @Body() dto: CreateDocumentDto) {
     const portraitId = await this.getPortraitId(req.user.id);
@@ -83,7 +84,7 @@ export class DocumentController {
   @ApiOperation({
     summary: "Download an authorized private document",
     description:
-      "Send JWT credentials explicitly. Private documents support PDF/JPEG/PNG and imported DOCX attachments. Unmigrated legacy documents retain their public fileUrl and return 404 here.",
+      "Send JWT credentials explicitly. Private documents support PDF/JPEG/PNG/DOCX attachments. Unmigrated legacy documents retain their public fileUrl and return 404 here.",
   })
   @ApiProduces(...STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)
   @ApiResponse({
@@ -92,8 +93,8 @@ export class DocumentController {
     schema: { type: "string", format: "binary" },
     headers: {
       "Content-Disposition": { description: "attachment with a server-generated filename", schema: { type: "string" } },
-      "Content-Type": { description: "Allowed PDF/JPEG/PNG or imported DOCX metadata", schema: { type: "string" } },
-      "Content-Length": { description: "Positive integer, at most 10 MiB", schema: { type: "integer" } },
+      "Content-Type": { description: "Allowed PDF/JPEG/PNG/DOCX metadata", schema: { type: "string" } },
+      "Content-Length": { description: "Positive integer, at most 50 MiB", schema: { type: "integer", minimum: 1, maximum: STUDENT_DOCUMENT_MAX_BYTES } },
       "Cache-Control": { schema: { type: "string", example: "private, no-store" } },
       "X-Content-Type-Options": { schema: { type: "string", example: "nosniff" } },
     },
@@ -119,7 +120,7 @@ export class DocumentController {
   @ApiResponse({ status: 403, description: "Document replacement access denied" })
   @ApiResponse({ status: 409, description: "Document changed concurrently; reload before replacing" })
   @UseGuards(DocumentMutationGuard)
-  @UseInterceptors(MulterExceptionInterceptor, FileInterceptor("file", { limits: studentVersionLimits }))
+  @UseInterceptors(DocumentUploadCapacityInterceptor, MulterExceptionInterceptor, FileInterceptor("file", { limits: studentVersionLimits }))
   @Patch(":id/new-version")
   async newVersion(@Req() req: UserRequest, @Param("id", ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
     const portraitId = await this.getPortraitId(req.user.id);
