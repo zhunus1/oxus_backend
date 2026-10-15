@@ -244,7 +244,7 @@ for (const denial of ["no JWT", "foreign expert", "foreign student", "inactive e
   });
 
 // Phase 5A: exercise actual multipart interception, DB transactions and real private storage.
-const maxBytes = 10 * 1024 * 1024;
+const maxBytes = 50 * 1024 * 1024;
 const sizedPdf = (size: number) => {
   const buffer = Buffer.alloc(size, 0x20);
   buffer.write("%PDF-1.7\n");
@@ -645,7 +645,7 @@ for (const invalid of ["missing", "empty", "multiple", "oversized", "MIME mismat
         invalid === "empty"
           ? Buffer.alloc(0)
           : invalid === "oversized"
-            ? Buffer.alloc(10 * 1024 * 1024 + 1)
+            ? Buffer.alloc(50 * 1024 * 1024 + 1)
             : invalid === "magic mismatch"
               ? Buffer.from("MZ executable")
               : fixture(),
@@ -661,7 +661,7 @@ test("ownership guard precedes oversized multipart buffering", async () => {
   await upload(admin).expect(403);
   const doc = await createPrivate();
   await http(foreignStudent, "patch", `/documents/${doc.id}/new-version`)
-    .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), "oversized.pdf")
+    .attach("file", Buffer.alloc(50 * 1024 * 1024 + 1), "oversized.pdf")
     .expect(403);
   assert.equal(storageCalls, calls + 4); // normal create: bucket head/policy/ACL + PutObject
 });
@@ -1060,7 +1060,7 @@ test("HTTP client cancellation closes upstream without buffering the full file",
     },
   });
   body.once("close", closed.resolve);
-  storage.streamPrivateDocument = async () => ({ stream: body, contentType: "application/pdf", size: 10 * 1024 * 1024 });
+  storage.streamPrivateDocument = async () => ({ stream: body, contentType: "application/pdf", size: 50 * 1024 * 1024 });
   try {
     await new Promise<void>((resolve, reject) => {
       const req = nodeRequest(
@@ -1078,7 +1078,7 @@ test("HTTP client cancellation closes upstream without buffering the full file",
     });
     await closed.promise;
     assert(body.destroyed);
-    assert(produced < 10 * 1024 * 1024);
+    assert(produced < 50 * 1024 * 1024);
   } finally {
     body.destroy();
     await closed.promise;

@@ -1,12 +1,12 @@
 import { BadRequestException } from "@nestjs/common";
 import type { MulterOptions } from "@nestjs/platform-express/multer/interfaces/multer-options.interface";
+import { isValidStudentDocumentDocx } from "./student-document-docx";
 
-export const STUDENT_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
-export const STUDENT_DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png"] as const;
-export type StudentDocumentMime = (typeof STUDENT_DOCUMENT_MIME_TYPES)[number];
-// Imported legacy DOCX can be downloaded; new uploads retain their existing formats.
+export const STUDENT_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024;
 export const STUDENT_DOCUMENT_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-export const STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES = [...STUDENT_DOCUMENT_MIME_TYPES, STUDENT_DOCUMENT_DOCX_MIME] as const;
+export const STUDENT_DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png", STUDENT_DOCUMENT_DOCX_MIME] as const;
+export type StudentDocumentMime = (typeof STUDENT_DOCUMENT_MIME_TYPES)[number];
+export const STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES = STUDENT_DOCUMENT_MIME_TYPES;
 export type StudentDocumentDownloadMime = (typeof STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)[number];
 const downloadExtensions: Record<StudentDocumentDownloadMime, string> = {
   "application/pdf": "pdf",
@@ -70,22 +70,24 @@ function validJpeg(buffer: Buffer): boolean {
   return false;
 }
 
-/** Bounded structural checks, not malware scanning or a full PDF/image decoder. */
+/** Bounded structural checks, not malware scanning or a full document decoder. */
 export function validateStudentDocumentFile(file: Pick<Express.Multer.File, "buffer" | "size" | "mimetype"> | undefined) {
   try {
     if (!file || Array.isArray(file) || !Buffer.isBuffer(file.buffer)) throw new Error();
     const { buffer, size, mimetype } = file;
     if (!buffer.length || buffer.length > STUDENT_DOCUMENT_MAX_BYTES || size !== buffer.length || !isStudentDocumentMime(mimetype)) throw new Error();
     const valid =
-      mimetype === "application/pdf"
-        ? /^%PDF-(?:1\.[0-7]|2\.0)[\r\n]/.test(buffer.toString("latin1", 0, 12)) && /%%EOF\s*$/.test(buffer.toString("latin1", Math.max(0, buffer.length - 1024)))
-        : mimetype === "image/png"
-          ? validPng(buffer)
-          : validJpeg(buffer);
+      mimetype === STUDENT_DOCUMENT_DOCX_MIME
+        ? isValidStudentDocumentDocx(buffer, STUDENT_DOCUMENT_MAX_BYTES)
+        : mimetype === "application/pdf"
+          ? /^%PDF-(?:1\.[0-7]|2\.0)[\r\n]/.test(buffer.toString("latin1", 0, 12)) && /%%EOF\s*$/.test(buffer.toString("latin1", Math.max(0, buffer.length - 1024)))
+          : mimetype === "image/png"
+            ? validPng(buffer)
+            : validJpeg(buffer);
     if (!valid) throw new Error();
     return { buffer, contentType: mimetype, size: buffer.length };
   } catch {
     // Also sanitizes inaccessible/disk-only buffers and read/getter failures.
-    throw new BadRequestException("Provide one non-empty PDF, JPEG or PNG document up to 10 MiB with matching content and MIME type");
+    throw new BadRequestException("Provide one non-empty PDF, JPEG, PNG or DOCX document up to 50 MiB with matching content and MIME type");
   }
 }

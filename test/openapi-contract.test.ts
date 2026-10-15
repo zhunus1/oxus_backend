@@ -37,7 +37,7 @@ test("private documents advertise JWT multipart limits and authenticated binary 
     assert(api.security.some((item: any) => Object.hasOwn(item, "bearer")));
     const body = api.requestBody.content["multipart/form-data"].schema;
     assert.equal(body.properties.file.format, "binary");
-    assert.match(body.properties.file.description, /10 MiB/);
+    assert.match(body.properties.file.description, /50 MiB/);
     for (const status of [400, 401, 403, 404, 413, 503]) assert(api.responses[String(status)]);
   }
   assert(replacement.responses["409"]);
@@ -57,13 +57,24 @@ test("Document schemas describe exactly eleven required public fields with nulla
   assert.equal(dto.properties.targetProgramId.type, "integer");
   assert.equal(dto.properties.targetProgramId.nullable, true);
   assert.deepEqual(dto.properties.status.enum, ["DRAFT", "REVIEW", "NEEDS_REVISION", "APPROVED"]);
-  assert.deepEqual(dto.properties.documentType.enum, ["SOP", "CV", "PASSPORT", "TRANSCRIPT", "RECOMMENDATION_LETTER", "PORTFOLIO", "LANGUAGE_CERTIFICATE", "OTHER", "DIPLOMA"]);
+  assert.deepEqual(dto.properties.documentType.enum, [
+    "SOP",
+    "CV",
+    "PASSPORT",
+    "TRANSCRIPT",
+    "RECOMMENDATION_LETTER",
+    "PORTFOLIO",
+    "LANGUAGE_CERTIFICATE",
+    "OTHER",
+    "DIPLOMA",
+    "STUDENT_PHOTO",
+  ]);
   for (const field of ["id", "version", "studentPortraitId"]) assert.equal(dto.properties[field].type, "integer");
   for (const field of ["title", "fileUrl"]) assert.equal(dto.properties[field].type, "string");
   for (const field of ["createdAt", "updatedAt"]) assert.equal(dto.properties[field].format, "date-time");
 });
 
-test("DIPLOMA is accepted and documented across document and program requirement inputs", () => {
+test("DIPLOMA and STUDENT_PHOTO are accepted and documented across document and program requirement inputs", () => {
   const { plainToInstance } = built("class-transformer");
   const { validateSync } = built("class-validator");
   for (const [path, name, field, values] of [
@@ -74,13 +85,16 @@ test("DIPLOMA is accepted and documented across document and program requirement
     ["modules/program-requirement/api/dto/update-program-requirement.dto", "UpdateProgramRequirementDto", "type", {}],
   ] as const) {
     const dto = built(`./dist/src/${path}.js`)[name];
-    for (const type of ["DIPLOMA", "OTHER"]) assert.deepEqual(validateSync(plainToInstance(dto, { ...values, [field]: type })), []);
+    for (const type of ["DIPLOMA", "STUDENT_PHOTO", "OTHER"]) assert.deepEqual(validateSync(plainToInstance(dto, { ...values, [field]: type })), []);
     assert(validateSync(plainToInstance(dto, { ...values, [field]: "NOT_A_DOCUMENT_TYPE" })).some((error: any) => error.property === field));
-    if (doc.components.schemas[name]) assert(doc.components.schemas[name].properties[field].enum.includes("DIPLOMA"));
+    if (doc.components.schemas[name]) {
+      for (const type of ["DIPLOMA", "STUDENT_PHOTO"]) assert(doc.components.schemas[name].properties[field].enum.includes(type));
+    }
   }
   for (const path of ["/documents", "/expert/portraits/{portraitId}/documents"]) {
     const type = operation(path, "post").requestBody.content["multipart/form-data"].schema.properties.documentType;
     assert(type.enum.includes("DIPLOMA"));
+    assert(type.enum.includes("STUDENT_PHOTO"));
     assert(type.enum.includes("OTHER"));
   }
   assert(doc.components.schemas.ProgramRequirementEntity.properties.type.enum.includes("DIPLOMA"));
@@ -208,7 +222,7 @@ test("exact seven staff routes preserve bearer, bounded integer path IDs and bin
   const binary = doc.paths[root + "/{documentId}/file"].get;
   for (const mime of ["application/pdf", "image/jpeg", "image/png", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"])
     assert.equal(binary.responses["200"].content[mime].schema.format, "binary");
-  assert.deepEqual(binary.responses["200"].headers["Content-Length"].schema, { type: "integer", minimum: 1, maximum: 10485760 });
+  assert.deepEqual(binary.responses["200"].headers["Content-Length"].schema, { type: "integer", minimum: 1, maximum: 52428800 });
   for (const header of ["Content-Disposition", "Cache-Control", "X-Content-Type-Options"]) assert.ok(binary.responses["200"].headers[header]);
   const replace = doc.paths[root + "/{documentId}/new-version"].patch;
   assert.deepEqual(replace.requestBody.content["multipart/form-data"].schema.required, ["file", "expectedVersion", "expectedUpdatedAt"]);
