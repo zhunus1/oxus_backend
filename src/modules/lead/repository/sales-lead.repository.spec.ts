@@ -7,7 +7,11 @@ jest.mock("generated/prisma/client", () => ({
   LeadCallbackStatus: { SCHEDULED: "SCHEDULED", COMPLETED: "COMPLETED", CANCELLED: "CANCELLED" },
   LeadExpertCallStatus: { REQUESTED: "REQUESTED", CONFIRMED: "CONFIRMED", DECLINED: "DECLINED", CANCELLED: "CANCELLED" },
   MeetingStatus: { SCHEDULED: "SCHEDULED", CANCELLED: "CANCELLED" },
-  Prisma: { TransactionIsolationLevel: { Serializable: "Serializable" } },
+  Prisma: {
+    TransactionIsolationLevel: { Serializable: "Serializable" },
+    sql: jest.fn((strings, ...values) => ({ strings, values })),
+    join: jest.fn(values => values),
+  },
 }));
 
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
@@ -15,9 +19,11 @@ jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 describe("SalesLeadRepository visibility and acceptance", () => {
   const findMany = jest.fn().mockResolvedValue([]);
   const count = jest.fn().mockResolvedValue(0);
+  const queryRaw = jest.fn().mockResolvedValue([]);
   const prisma = {
     lead: { findMany, count },
     $transaction: jest.fn(),
+    $queryRaw: queryRaw,
   } as unknown as PrismaService;
   const repository = new SalesLeadRepository(prisma);
 
@@ -25,6 +31,32 @@ describe("SalesLeadRepository visibility and acceptance", () => {
     jest.clearAllMocks();
     findMany.mockResolvedValue([]);
     count.mockResolvedValue(0);
+    queryRaw.mockResolvedValue([]);
+  });
+
+  it("adds city without modifying any existing list fields or the original result", async () => {
+    const lead = {
+      id: 8,
+      displayName: "Fixture",
+      email: null,
+      callbacks: [],
+      originSource: { id: 1, code: "office-manual" },
+      submissions: [{ id: 13, metrics: { score: 20 }, receivedAt: new Date("2026-01-01") }],
+    };
+    const original = structuredClone(lead);
+    findMany.mockResolvedValue([lead]);
+    count.mockResolvedValue(1);
+    queryRaw.mockResolvedValue([{ id: 13, answer: { answerText: "  Алматы  " }, locale: "ru" }]);
+    const result = await repository.list(17, { status: LeadStatus.NEW, page: 1, limit: 10 });
+    expect(result).toEqual({ data: [{ ...original, city: "Алматы" }], total: 1 });
+    expect(lead).toEqual(original);
+  });
+
+  it("returns null without a city query when a lead has no submission", async () => {
+    findMany.mockResolvedValue([{ id: 8, submissions: [] }]);
+    count.mockResolvedValue(1);
+    await expect(repository.list(17, { status: LeadStatus.NEW, page: 1, limit: 10 })).resolves.toEqual({ data: [{ id: 8, submissions: [], city: null }], total: 1 });
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 
   it("shows only unassigned or own leads in the NEW queue", async () => {

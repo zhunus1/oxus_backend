@@ -15,8 +15,9 @@ import { DocumentEntity } from "./dto/document.entity";
 import { StaffDocumentMutationGuard } from "./staff-document-mutation.guard";
 import { streamDocumentResponse } from "./document-stream-response";
 import { StaffDocumentInputInterceptor, StaffInput } from "./staff-document-input.interceptor";
+import { DocumentUploadCapacityInterceptor } from "./document-upload-capacity.interceptor";
 
-const file = { type: "string", format: "binary", description: "One PDF/JPEG/PNG ≤10 MiB; bounded Buffer upload, not streaming upload" };
+const file = { type: "string", format: "binary", description: "One PDF/JPEG/PNG/DOCX ≤50 MiB; bounded Buffer upload, not streaming upload" };
 const snapshot = {
   expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
   expectedUpdatedAt: { type: "string", format: "date-time", description: "Exact UTC updatedAt with milliseconds from last response" },
@@ -75,6 +76,7 @@ export class StaffDocumentController {
   @ApiOperation({ summary: "Upload for an existing StudentPortrait without student login" })
   @UseGuards(StaffDocumentMutationGuard)
   @UseInterceptors(
+    DocumentUploadCapacityInterceptor,
     MulterExceptionInterceptor,
     FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 3, fieldSize: 1024, parts: 4 } }),
     StaffDocumentInputInterceptor,
@@ -94,7 +96,7 @@ export class StaffDocumentController {
   })
   @ApiResponse({ status: 201, type: DocumentEntity })
   @ApiResponse({ status: 413, description: "Multipart/file limits exceeded" })
-  @ApiResponse({ status: 503, description: "Private storage unavailable" })
+  @ApiResponse({ status: 503, description: "Private storage unavailable or upload capacity busy" })
   upload(@Req() req: UserRequest, @Param("portraitId", StaffDocumentIdPipe) portraitId: number, @UploadedFile() upload: Express.Multer.File, @Body() dto: StaffCreateDocumentDto) {
     return this.documents.staffUpload(req.user.id, portraitId, upload, dto);
   }
@@ -103,14 +105,14 @@ export class StaffDocumentController {
   @ApiParam({ name: "documentId", schema: staffIdSchema })
   @ApiOperation({
     summary: "Stream an authorized private document",
-    description: "PDF/JPEG/PNG and imported DOCX attachments. Unmigrated legacy documents return 404. New uploads remain PDF/JPEG/PNG.",
+    description: "PDF/JPEG/PNG/DOCX attachments. Unmigrated legacy documents return 404.",
   })
   @ApiProduces(...STUDENT_DOCUMENT_DOWNLOAD_MIME_TYPES)
   @ApiResponse({
     status: 200,
     schema: { type: "string", format: "binary" },
     headers: {
-      "Content-Length": { schema: { type: "integer", minimum: 1, maximum: 10485760 } },
+      "Content-Length": { schema: { type: "integer", minimum: 1, maximum: STUDENT_DOCUMENT_MAX_BYTES } },
       "Content-Disposition": { schema: { type: "string" } },
       "Cache-Control": { schema: { type: "string", example: "private, no-store" } },
       "X-Content-Type-Options": { schema: { type: "string", example: "nosniff" } },
@@ -127,6 +129,7 @@ export class StaffDocumentController {
   @ApiOperation({ summary: "Replace private bytes using strict snapshot CAS; preserve old object" })
   @UseGuards(StaffDocumentMutationGuard)
   @UseInterceptors(
+    DocumentUploadCapacityInterceptor,
     MulterExceptionInterceptor,
     FileInterceptor("file", { limits: { ...staffMultipartLimits, fields: 2, fieldSize: 1024, parts: 3 } }),
     StaffDocumentInputInterceptor,
@@ -135,7 +138,7 @@ export class StaffDocumentController {
   @ApiBody({ schema: { type: "object", required: ["file", "expectedVersion", "expectedUpdatedAt"], properties: { file, ...snapshot } } })
   @ApiResponse({ status: 200, type: DocumentEntity })
   @ApiResponse({ status: 413, description: "Multipart/file limits exceeded" })
-  @ApiResponse({ status: 503, description: "Private storage unavailable" })
+  @ApiResponse({ status: 503, description: "Private storage unavailable or upload capacity busy" })
   replace(
     @Req() req: UserRequest,
     @Param("portraitId", StaffDocumentIdPipe) portraitId: number,

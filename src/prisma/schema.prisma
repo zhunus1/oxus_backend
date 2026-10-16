@@ -80,6 +80,7 @@ enum RequirementType {
   LANGUAGE_CERTIFICATE
   OTHER
   DIPLOMA
+  STUDENT_PHOTO
 }
 
 enum SubscriptionTier {

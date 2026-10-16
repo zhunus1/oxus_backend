@@ -11,6 +11,7 @@ import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
 import { ThrottlerModule } from "@nestjs/throttler";
 import request from "supertest";
+import { Client } from "pg";
 import type { PrismaService as PrismaServiceType } from "../src/database/prisma.service";
 
 const built = createRequire(resolve("package.json"));
@@ -114,6 +115,143 @@ after(async () => {
   await prisma.$disconnect();
   if (originalSecret === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = originalSecret;
+});
+
+test("Sales lists project city from latest questionnaires without exposing payloads or other managers' leads", async () => {
+  const prefix = `city-${randomUUID()}`;
+  const source = await prisma.leadSource.findUniqueOrThrow({ where: { code: "office-manual" } });
+  const snapshots = [
+    { raw: { locale: "ru" }, normalized: { questionnaire: { answers: [{ questionId: "city", answerText: "Алматы", optionIds: ["almaty"] }] } }, city: "Алматы" },
+    { raw: { locale: "kk", answers: [{ questionId: "city", optionIds: ["astana"] }] }, city: "Астана" },
+    { raw: { answers: [{ question: "Из какого вы города?", answer: "  Шымкент  " }] }, city: "Шымкент" },
+    { raw: { answers: [{ questionText: "Сен қай қаладансың?", answerText: "Ақтау" }] }, city: "Ақтау" },
+    { raw: { answers: [{ questionId: "city", optionIds: ["other"], freeText: "  Қарағанды  " }] }, city: "Қарағанды" },
+    { raw: { answers: [{ questionId: "grade", optionIds: ["10"] }] }, city: null },
+    { raw: { answers: "malformed" }, city: null },
+    { raw: { answers: [{ questionId: "city", answerText: "   " }] }, city: null },
+    { raw: { answers: [{ questionId: "city", optionIds: ["other"], freeText: "   " }] }, city: null },
+    { raw: { answers: [{ questionId: null, question: "Из какого вы города?", answer: "Актау" }] }, city: "Актау" },
+    { raw: {}, city: null },
+  ];
+  const expected = new Map<number, string | null>();
+  for (const [index, snapshot] of snapshots.entries()) {
+    const lead = await prisma.lead.create({
+      data: {
+        displayName: `${prefix} ${index}`,
+        assignedSalesManagerId: managerId,
+        originSourceId: source.id,
+        submissions: {
+          create: { sourceId: source.id, rawPayload: snapshot.raw, ...("normalized" in snapshot ? { normalizedPayload: snapshot.normalized } : {}), metrics: { score: 20 } },
+        },
+      },
+    });
+    expected.set(lead.id, snapshot.city);
+  }
+  const noCityId = [...expected.keys()].at(-1)!;
+  const noSubmission = await prisma.lead.create({ data: { displayName: `${prefix} no questionnaire`, assignedSalesManagerId: managerId, originSourceId: source.id } });
+  expected.set(noSubmission.id, null);
+  await prisma.leadSubmission.create({
+    data: { leadId: noCityId, sourceId: source.id, rawPayload: { answers: [{ questionId: "city", optionIds: ["almaty"] }] }, receivedAt: new Date("2000-01-01") },
+  });
+  await prisma.lead.create({ data: { displayName: `${prefix} hidden`, assignedSalesManagerId: otherManagerId, originSourceId: source.id } });
+  const url = `/api/v1/sales/leads?status=NEW&search=${prefix}&limit=100`;
+  await request(app.getHttpServer()).get(url).expect(401);
+  const studentRole = await prisma.role.upsert({ where: { code: "STUDENT" }, create: { code: "STUDENT", name: "Student" }, update: {} });
+  const outsider = await prisma.user.create({ data: { firstname: "City", lastname: "Denied", email: `${randomUUID()}@example.test`, password: "unused", roleId: studentRole.id } });
+  await request(app.getHttpServer())
+    .get(url)
+    .set("Authorization", `Bearer ${jwt.sign({ sub: outsider.id }, { secret, expiresIn: 60 })}`)
+    .expect(403);
+  const response = await request(app.getHttpServer())
+    .get(url)
+    .set("Authorization", `Bearer ${jwt.sign({ sub: managerId }, { secret, expiresIn: 60 })}`)
+    .expect(200);
+  assert.equal(response.body.meta.total, expected.size);
+  assert.equal(response.body.data.length, expected.size);
+  for (const lead of response.body.data) {
+    assert.equal(lead.city, expected.get(lead.id));
+    if (lead.id === noSubmission.id) assert.deepEqual(lead.submissions, []);
+    else {
+      assert.deepEqual(Object.keys(lead.submissions[0]).sort(), ["id", "metrics", "receivedAt"]);
+      assert.deepEqual(lead.submissions[0].metrics, { score: 20 });
+    }
+  }
+});
+
+test("Sales city pagination uses one bounded SQL projection and deterministic receivedAt/id questionnaire ordering", async () => {
+  const prefix = `city-page-${randomUUID()}`;
+  const source = await prisma.leadSource.findUniqueOrThrow({ where: { code: "office-manual" } });
+  const timestamp = new Date("2026-01-01T00:00:00Z");
+  const leadIds: number[] = [];
+  for (let index = 0; index < 120; index++) {
+    const lead = await prisma.lead.create({
+      data: { displayName: `${prefix} ${index}`, assignedSalesManagerId: managerId, originSourceId: source.id, createdAt: timestamp },
+    });
+    leadIds.push(lead.id);
+    for (const city of ["almaty", "astana", "shymkent"])
+      await prisma.leadSubmission.create({
+        data: { leadId: lead.id, sourceId: source.id, rawPayload: { locale: "ru", answers: [{ questionId: "city", optionIds: [city] }] }, receivedAt: timestamp },
+      });
+  }
+  const original = Reflect.get(Client.prototype, "query");
+  let measured = false;
+  let queries: { text: string; values: any[] }[] = [];
+  Client.prototype.query = function (this: Client, ...args: any[]) {
+    if (measured) queries.push({ text: typeof args[0] === "string" ? args[0] : args[0].text, values: typeof args[0] === "string" ? (args[1] ?? []) : (args[0].values ?? []) });
+    return original.apply(this, args as any);
+  } as any;
+  const diagnostic = new Client({ connectionString: databaseUrl.toString() });
+  const results: { limit: number; queries: number; cityQueries: number; cityIds: number; durationMs: number; planMs: number; planNodes: string[] }[] = [];
+  const list = (limit: number, page = 1) =>
+    request(app.getHttpServer())
+      .get("/api/v1/sales/leads")
+      .query({ status: "NEW", search: prefix, limit, page })
+      .set("Authorization", `Bearer ${jwt.sign({ sub: managerId }, { secret, expiresIn: 60 })}`);
+  try {
+    await diagnostic.connect();
+    for (const limit of [10, 50, 100]) {
+      queries = [];
+      const started = performance.now();
+      measured = true;
+      const response = await list(limit).expect(200);
+      measured = false;
+      assert.equal(response.body.meta.total, 120);
+      assert.equal(response.body.meta.totalPages, Math.ceil(120 / limit));
+      assert.deepEqual(
+        response.body.data.map((lead: any) => lead.id),
+        leadIds.slice().reverse().slice(0, limit),
+      );
+      assert(response.body.data.every((lead: any) => lead.city === "Шымкент"));
+      const batch = queries.filter(query => query.text.includes('FROM public."LeadSubmission"') && query.text.includes("jsonb_path_query_first"));
+      assert.equal(batch.length, 1);
+      assert.equal(batch[0].values.length - 2, limit);
+      const plan = (await diagnostic.query("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + batch[0].text, batch[0].values)).rows[0]["QUERY PLAN"][0];
+      const nodeTypes = (node: any): string[] => [node["Node Type"], ...(node.Plans ?? []).flatMap(nodeTypes)];
+      results.push({
+        limit,
+        queries: queries.filter(query => /^\s*(SELECT|WITH)/i.test(query.text)).length,
+        cityQueries: batch.length,
+        cityIds: limit,
+        durationMs: performance.now() - started,
+        planMs: plan["Execution Time"],
+        planNodes: nodeTypes(plan.Plan),
+      });
+    }
+    assert.equal(new Set(results.map(result => result.queries)).size, 1, "SQL count must not grow with the page size");
+    const page2 = await list(100, 2).expect(200);
+    assert.deepEqual(
+      page2.body.data.map((lead: any) => lead.id),
+      leadIds.slice().reverse().slice(100),
+    );
+    assert(page2.body.data.every((lead: any) => lead.city === "Шымкент"));
+    const empty = await list(100, 3).expect(200);
+    assert.deepEqual(empty.body.data, []);
+    console.log("SALES_CITY_SQL_BENCHMARK " + JSON.stringify(results));
+  } finally {
+    measured = false;
+    Client.prototype.query = original;
+    await diagnostic.end();
+  }
 });
 
 test("Express OTHER text survives ingestion and is returned in the authorized Sales card without being overwritten by retries", async () => {

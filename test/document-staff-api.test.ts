@@ -3,6 +3,7 @@ import "reflect-metadata";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { docxParts, syntheticDocxOfSize, syntheticZip } from "./fixtures/student-documents/docx";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -287,21 +288,48 @@ test("imported private DOCX downloads preserve bytes and headers for assigned EX
   assert.equal(anonymous.status, 403);
 });
 
-test("DOCX private download support does not permit new staff or student DOCX uploads", async () => {
+test("staff and student DOCX uploads and replacements preserve bytes and attachment headers", async () => {
   const bytes = fixture("synthetic-legacy.docx");
   const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  const beforeCalls = calls;
   for (const [actor, path] of [
     [expert, base()],
     [student, "/documents"],
   ] as const) {
-    await http(actor, "post", path)
-      .field("title", "Rejected new DOCX")
+    const uploaded = await http(actor, "post", path)
+      .field("title", "New DOCX")
       .field("documentType", "OTHER")
       .attach("file", bytes, { filename: "synthetic.docx", contentType: mime })
-      .expect(400);
+      .expect(201);
+    const doc = uploaded.body;
+    const download = await binary(http(actor, "get", `${path}/${doc.id}/file`)).expect(200);
+    assert.deepEqual(download.body, bytes);
+    assert.equal(download.headers["content-type"], mime);
+    assert.equal(download.headers["content-disposition"], `attachment; filename="document-${doc.id}.docx"`);
+    const replacement = http(actor, "patch", `${path}/${doc.id}/new-version`);
+    if (actor === expert) replacement.field("expectedVersion", String(doc.version)).field("expectedUpdatedAt", doc.updatedAt);
+    const updated = await replacement.attach("file", bytes, { filename: "replacement.docx", contentType: mime }).expect(200);
+    assert.equal(updated.body.version, doc.version + 1);
+    assert.deepEqual((await binary(http(actor, "get", `${path}/${doc.id}/file`)).expect(200)).body, bytes);
   }
-  assert.equal(calls, beforeCalls);
+});
+
+test("STUDENT_PHOTO accepts a photo for staff and student uploads without changing the public shape", async () => {
+  for (const [actor, path] of [
+    [expert, base()],
+    [student, "/documents"],
+  ] as const) {
+    const result = await http(actor, "post", path)
+      .field("title", "Фото ученика (3×4)")
+      .field("documentType", "STUDENT_PHOTO")
+      .attach("file", fixture("pixel.jpg"), { filename: "photo.jpg", contentType: "image/jpeg" })
+      .expect(201);
+    assert.equal(result.body.documentType, "STUDENT_PHOTO");
+    assert.deepEqual(Object.keys(result.body).sort(), fields);
+    assert.deepEqual((await binary(http(actor, "get", `${path}/${result.body.id}/file`)).expect(200)).body, fixture("pixel.jpg"));
+  }
+  const filtered = await http(expert, "get", `${base()}?documentType=STUDENT_PHOTO`).expect(200);
+  assert(filtered.body.data.length >= 2);
+  assert(filtered.body.data.every((doc: any) => doc.documentType === "STUDENT_PHOTO"));
 });
 
 const routes = ["list", "detail", "upload", "download", "version", "metadata", "delete"];
@@ -315,7 +343,7 @@ for (const role of ["STUDENT", "SCHOOLBOY", "SALES_MANAGER", "SUPPORT", "foreign
       const path = ["list", "upload"].includes(route) ? base() : `${base()}/${doc.id}${route === "download" ? "/file" : route === "version" ? "/new-version" : ""}`;
       const req = role === "no JWT" ? request(app.getHttpServer())[method](`/api/v1${path}`) : http(actor, method, path);
       // Deliberately oversized upload demonstrates guards precede buffering/file validation (403, not 413).
-      if (["upload", "version"].includes(route)) req.attach("file", role === "no JWT" ? fixture() : Buffer.alloc(10 * 1024 * 1024 + 1), "oversize.pdf");
+      if (["upload", "version"].includes(route)) req.attach("file", role === "no JWT" ? fixture() : Buffer.alloc(50 * 1024 * 1024 + 1), "oversize.pdf");
       else if (["metadata", "delete"].includes(route)) req.send({ ...snap(doc), ...(route === "metadata" ? { title: "Forbidden" } : {}) });
       const result = await req.expect(role === "no JWT" ? 401 : 403);
       assert.equal(calls, beforeCalls);
@@ -1091,7 +1119,7 @@ for (const route of ["create", "version"])
     test(`Phase 5A staff ${route} MAX${delta < 0 ? delta : `+${delta}`} boundary compatibility`, async () => {
       const doc = route === "version" ? await create() : undefined;
       const before = { documents: await db.document.findMany({ orderBy: { id: "asc" } }), audits: await db.auditLog.findMany({ orderBy: { id: "asc" } }), calls, deletes };
-      const buffer = Buffer.alloc(10 * 1024 * 1024 + delta, 0x20);
+      const buffer = Buffer.alloc(50 * 1024 * 1024 + delta, 0x20);
       buffer.write("%PDF-1.7\n");
       buffer.write("\n%%EOF\n", buffer.length - 7);
       const req = doc
@@ -1118,7 +1146,7 @@ for (const invalid of ["missing", "empty", "oversized", "multiple", "magic misma
     if (invalid !== "missing")
       req.attach(
         "file",
-        invalid === "empty" ? Buffer.alloc(0) : invalid === "oversized" ? Buffer.alloc(10 * 1024 * 1024 + 1) : invalid === "magic mismatch" ? Buffer.from("MZ invalid") : fixture(),
+        invalid === "empty" ? Buffer.alloc(0) : invalid === "oversized" ? Buffer.alloc(50 * 1024 * 1024 + 1) : invalid === "magic mismatch" ? Buffer.from("MZ invalid") : fixture(),
         { filename: "doc.pdf", contentType: invalid === "MIME mismatch" ? "image/png" : "application/pdf" },
       );
     if (invalid === "multiple") req.attach("file", fixture(), "extra.pdf");
@@ -1210,7 +1238,7 @@ test("list 50/100/500 rows has stable bounded pagination, constant SQL count and
 });
 
 test("four maximum bounded multipart uploads measure aggregate memory and short post-Put transactions", async () => {
-  const buffer = Buffer.alloc(10 * 1024 * 1024, 0x20);
+  const buffer = Buffer.alloc(50 * 1024 * 1024, 0x20);
   buffer.write("%PDF-1.7\n", 0, "ascii");
   buffer.write("\n%%EOF\n", buffer.length - 7, "ascii");
   const count = 4,
@@ -1271,5 +1299,87 @@ test("four maximum bounded multipart uploads measure aggregate memory and short 
     clearInterval(timer);
     barrier.close();
     db.$transaction = transaction;
+  }
+});
+
+test("student and staff share four upload slots before multipart parsing and recover after completion", async () => {
+  const barrier = putBarrier(4);
+  const pending = [
+    upload(),
+    upload(),
+    http(student, "post", "/documents").field("title", "Admission fixture").field("documentType", "OTHER").attach("file", fixture(), "small.pdf"),
+    http(student, "post", "/documents").field("title", "Admission fixture").field("documentType", "OTHER").attach("file", fixture(), "small.pdf"),
+  ].map(req => req.then((response: any) => response));
+  try {
+    await waitFor(barrier.entered.promise);
+    const beforeCalls = calls;
+    const beforeCount = await db.document.count();
+    await http(student, "post", "/documents").set("Content-Type", "multipart/form-data").send("missing boundary").expect(503);
+    await http(expert, "post", base()).set("Content-Type", "multipart/form-data").send("missing boundary").expect(503);
+    assert.equal(calls, beforeCalls);
+    assert.equal(await db.document.count(), beforeCount);
+  } finally {
+    barrier.close();
+    const responses = await Promise.all(pending);
+    assert(responses.every(response => response.status === 201));
+  }
+  await http(student, "post", "/documents").set("Content-Type", "multipart/form-data").send("missing boundary").expect(400);
+  await upload().expect(201);
+});
+
+test("fake DOCX names, MIME and OOXML structure cannot create or replace documents", async () => {
+  const doc = await create();
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const cases = [
+    { bytes: fixture(), contentType: mime, filename: "fake.docx" },
+    { bytes: fixture("synthetic-legacy.docx"), contentType: "application/pdf", filename: "fake.pdf" },
+    { bytes: Buffer.from("PK\x03\x04broken"), contentType: mime, filename: "broken.docx" },
+    {
+      bytes: syntheticZip(docxParts.map(([name, value]) => [name, name === "word/document.xml" ? String(value).replace("</w:body>", "</w:wrong>") : value])),
+      contentType: mime,
+      filename: "malformed.docx",
+    },
+  ];
+  for (const [actor, path] of [
+    [expert, base()],
+    [student, "/documents"],
+  ] as const)
+    for (const replacement of [false, true])
+      for (const item of cases) {
+        const before = { row: await row(doc.id), count: await db.document.count(), calls, deletes };
+        const req = http(actor, replacement ? "patch" : "post", replacement ? `${path}/${doc.id}/new-version` : path);
+        if (!replacement) req.field("title", "Invalid DOCX").field("documentType", "OTHER");
+        else if (actor === expert) req.field("expectedVersion", String(doc.version)).field("expectedUpdatedAt", doc.updatedAt);
+        await req.attach("file", item.bytes, { filename: item.filename, contentType: item.contentType }).expect(400);
+        assert.deepEqual({ row: await row(doc.id), count: await db.document.count(), calls, deletes }, before);
+      }
+});
+
+test("all student and staff create/replacement paths accept a 50 MiB DOCX and reject MAX+1 before storage", async () => {
+  const bytes = syntheticDocxOfSize(50 * 1024 * 1024);
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  for (const [actor, path] of [
+    [expert, base()],
+    [student, "/documents"],
+  ] as const) {
+    const created = await http(actor, "post", path)
+      .field("title", "Maximum DOCX")
+      .field("documentType", "OTHER")
+      .attach("file", bytes, { filename: "max.docx", contentType: mime })
+      .expect(201);
+    const doc = created.body;
+    assert.deepEqual((await binary(http(actor, "get", `${path}/${doc.id}/file`)).expect(200)).body, bytes);
+    const replacement = http(actor, "patch", `${path}/${doc.id}/new-version`);
+    if (actor === expert) replacement.field("expectedVersion", String(doc.version)).field("expectedUpdatedAt", doc.updatedAt);
+    const replaced = await replacement.attach("file", bytes, { filename: "max.docx", contentType: mime }).expect(200);
+    assert.equal(replaced.body.version, doc.version + 1);
+    for (const version of [false, true]) {
+      const before = { row: await row(doc.id), count: await db.document.count(), calls, deletes };
+      const req = http(actor, version ? "patch" : "post", version ? `${path}/${doc.id}/new-version` : path);
+      if (!version) req.field("title", "Too large").field("documentType", "OTHER");
+      else if (actor === expert) req.field("expectedVersion", String(replaced.body.version)).field("expectedUpdatedAt", replaced.body.updatedAt);
+      await req.attach("file", Buffer.concat([bytes, Buffer.from([0])]), { filename: "oversized.docx", contentType: mime }).expect(413);
+      assert.deepEqual({ row: await row(doc.id), count: await db.document.count(), calls, deletes }, before);
+    }
   }
 });
