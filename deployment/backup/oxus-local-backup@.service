@@ -1,0 +1,25 @@
+[Unit]
+Description=OXUS %i private local database, MinIO and queue backup
+Requires=docker.service
+After=docker.service
+RequiresMountsFor=/var/backups/oxus-backend/%i /opt/oxus_backend/deployment
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/oxus-backup/oxus_backup.py run --environment %i --scheduled
+ExecStopPost=/usr/bin/python3 /usr/local/lib/oxus-backup/oxus_backup.py recover --environment %i
+TimeoutStartSec=15min
+TimeoutStopSec=5min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/oxus-backend/%i
+StandardOutput=journal
+StandardError=journal

@@ -3,7 +3,13 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1",
+    "^generated/(.*)$": "<rootDir>/../generated/$1",
+    "^(\\.{1,2}/.*)\\.js$": "$1"
+  },
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
+    "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "<rootDir>/tsconfig.e2e.json" }]
+  },
+  "transformIgnorePatterns": ["/node_modules/(?!(?:uuid|@smithy/(?:core|node-http-handler))/)"]
 }
