@@ -94,6 +94,8 @@ yarn test:cov
 yarn build
 ```
 
+`yarn test:e2e` boots the real `AppModule` and checks `/api/v1/health`. Supply a disposable loopback PostgreSQL `DATABASE_URL` ending in `_test`, `SALES_V2_TEST_REDIS_URL` (or `REDIS_URL`), and a disposable loopback HTTP MinIO `AWS_MINIO_ENDPOINT` with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The PostgreSQL user needs permission to create databases. The runner generates Prisma Client at the existing path, creates and migrates its own temporary database, and removes that database afterward. It uses an empty working directory with fixture JWT/Jitsi settings, so application startup does not read the project's `.env`. Redis and MinIO must be dedicated test services; the runner leaves their lifecycle to the caller. It never requires a production database or a production Jitsi key. Jest CLI options can be passed after `yarn test:e2e`, for example `--detectOpenHandles`.
+
 ## Deployment
 
 Changes go through `feature/*` → PR to `test` → Test deployment → PR to `main` → Production deployment.
