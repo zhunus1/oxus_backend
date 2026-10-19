@@ -1,0 +1,13 @@
+[Unit]
+Description=OXUS %i daily local backup at midnight in Almaty
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Almaty
+AccuracySec=1s
+RandomizedDelaySec=0
+# Preserve the agreed maintenance window: do not stop the API on a daytime reboot.
+Persistent=false
+Unit=oxus-local-backup@%i.service
+
+[Install]
+WantedBy=timers.target

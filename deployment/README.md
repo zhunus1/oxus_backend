@@ -128,6 +128,13 @@ restore, infrastructure upgrade or Nginx edit occurs during routine code release
 
 ## Manual recovery
 
+Scheduled local PostgreSQL, MinIO, Redis and configuration backups use the same
+script for Test and Production; see the [installation and recovery guide](backup/README.md).
+Each host runs at 00:00 Asia/Almaty, retains 7 daily points plus the latest successful
+Sunday, and shares its deployment lock. Explicit environment checks, separate local
+directories and manifests keep the environments apart. Off-server storage is not
+configured by this installer.
+
 Use the prior digest from `previous-image.txt` only after confirming schema
 compatibility. A code rollback does not undo migrations. For example:
 
