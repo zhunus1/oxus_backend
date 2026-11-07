@@ -36,6 +36,8 @@ class FakeS3:
         self.reject_commits = False
         self.lose_commit_response_once = False
         self.fail_part_once = False
+        self.omit_multipart_retention = False
+        self.retention_puts = []
 
     def get_bucket_versioning(self, **kwargs):
         return {'Status': 'Enabled'}
@@ -79,12 +81,15 @@ class FakeS3:
 
     def get_object_retention(self, Bucket, Key, VersionId):
         entry = self.find(Key, VersionId)
+        if entry['mode'] is None and entry['until'] is None:
+            raise S3Error('ObjectLockConfigurationNotFoundError')
         return {'Retention': {'Mode': entry['mode'], 'RetainUntilDate': entry['until']}}
 
     def put_object_retention(self, Bucket, Key, VersionId, Retention):
         entry = self.find(Key, VersionId)
-        if Retention['RetainUntilDate'] < entry['until']:
+        if entry['until'] is not None and Retention['RetainUntilDate'] < entry['until']:
             raise S3Error('AccessDenied')
+        self.retention_puts.append((Key, VersionId, Retention.copy()))
         entry['mode'], entry['until'] = Retention['Mode'], Retention['RetainUntilDate']
         return {}
 
@@ -113,7 +118,11 @@ class FakeS3:
     def complete_multipart_upload(self, UploadId, MultipartUpload, **kwargs):
         upload = self.uploads.pop(UploadId)
         data = b''.join(upload['parts'][part['PartNumber']] for part in MultipartUpload['Parts'])
-        return self.put_object(**upload['args'], Body=data)
+        arguments = upload['args'].copy()
+        if self.omit_multipart_retention:
+            arguments.pop('ObjectLockMode', None)
+            arguments.pop('ObjectLockRetainUntilDate', None)
+        return self.put_object(**arguments, Body=data)
 
     def abort_multipart_upload(self, UploadId, **kwargs):
         if UploadId not in self.uploads:
@@ -333,6 +342,88 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(len(self.s3.objects), 1)
         self.assertTrue(next(iter(self.s3.objects)).startswith(cloud.PREFIX + 'checks/'))
 
+    def test_multipart_without_retention_is_locked_and_verified_before_commit(self):
+        self.fixture_key()
+        self.readiness()
+        manifest = self.source_point()
+        self.s3.omit_multipart_retention = True
+        with patch.object(cloud, 'PART_SIZE', 4096):
+            result = cloud.run(self.s3, self.config)
+        self.assertEqual(result['status'], 'CLOUD_BACKUP_COMPLETE')
+        archive_key, receipt_key = cloud.keys(manifest['name'])
+        archive = self.s3.find(archive_key)
+        receipt = cloud.remote_receipt(self.s3, receipt_key)
+        self.assertEqual(receipt['archive_version'], archive['VersionId'])
+        self.assertEqual(archive['mode'], 'COMPLIANCE')
+        self.assertGreaterEqual(archive['until'], self.clock + timedelta(days=7))
+        self.assertEqual(len(self.s3.retention_puts), 1)
+        self.assertEqual(len(self.s3.objects[archive_key]), 1)
+        with self.assertRaises(S3Error):
+            self.s3.delete_object(Bucket=cloud.BUCKET, Key=archive_key, VersionId=archive['VersionId'])
+
+    def test_failed_lock_update_keeps_pending_archive_and_retry_does_not_reupload(self):
+        self.fixture_key()
+        self.readiness()
+        manifest = self.source_point()
+        self.s3.omit_multipart_retention = True
+        with patch.object(cloud, 'PART_SIZE', 4096), \
+             patch.object(self.s3, 'put_object_retention', side_effect=S3Error('AccessDenied')):
+            with self.assertRaises(S3Error):
+                cloud.run(self.s3, self.config)
+        archive_key, receipt_key = cloud.keys(manifest['name'])
+        original = self.s3.find(archive_key).copy()
+        self.assertNotIn(receipt_key, self.s3.objects)
+        self.assertFalse((self.state / 'last-success.json').exists())
+        self.assertTrue((self.state / 'pending.json').exists())
+        self.clock += timedelta(minutes=5)
+        with patch.object(cloud, 'encrypt_point', side_effect=AssertionError('must reuse ciphertext')), \
+             patch.object(self.s3, 'put_object', wraps=self.s3.put_object) as put:
+            result = cloud.run(self.s3, self.config)
+        self.assertEqual(result['status'], 'CLOUD_BACKUP_COMPLETE')
+        self.assertEqual([call.kwargs['Key'] for call in put.call_args_list], [receipt_key])
+        self.assertEqual(len(self.s3.objects[archive_key]), 1)
+        self.assertEqual(self.s3.find(archive_key)['VersionId'], original['VersionId'])
+        self.assertEqual(self.s3.find(archive_key)['data'], original['data'])
+        self.assertFalse((self.state / 'pending.json').exists())
+
+    def test_lock_update_requires_successful_readback_before_commit(self):
+        self.fixture_key()
+        manifest = self.source_point()
+        self.s3.omit_multipart_retention = True
+        with patch.object(cloud, 'PART_SIZE', 4096), \
+             patch.object(self.s3, 'put_object_retention', return_value={}):
+            with self.assertRaises(S3Error):
+                cloud.publish_pending(self.s3, self.config, manifest)
+        _, receipt_key = cloud.keys(manifest['name'])
+        self.assertNotIn(receipt_key, self.s3.objects)
+        self.assertFalse((self.state / 'last-success.json').exists())
+
+    def test_retention_access_failure_is_not_treated_as_missing_lock(self):
+        self.fixture_key()
+        manifest = self.source_point()
+        with patch.object(self.s3, 'get_object_retention', side_effect=S3Error('AccessDenied')):
+            with self.assertRaises(S3Error):
+                cloud.publish_pending(self.s3, self.config, manifest)
+        self.assertFalse(self.s3.retention_puts)
+        _, receipt_key = cloud.keys(manifest['name'])
+        self.assertNotIn(receipt_key, self.s3.objects)
+
+    def test_archive_retention_never_shortens_or_changes_unexpected_existing_lock(self):
+        point = self.remote_point(0, until=self.clock + timedelta(days=14))
+        key, version = point['archive_key'], point['archive_version']
+        minimum = self.clock + timedelta(days=7)
+        until = cloud.ensure_archive_retention(self.s3, key, version, minimum)
+        self.assertEqual(until, self.clock + timedelta(days=14))
+        self.assertFalse(self.s3.retention_puts)
+        for mode, expiry in [('GOVERNANCE', until), ('COMPLIANCE', None),
+                             ('COMPLIANCE', minimum.replace(tzinfo=None))]:
+            with self.subTest(mode=mode, expiry=expiry):
+                entry = self.s3.find(key, version)
+                entry['mode'], entry['until'] = mode, expiry
+                with self.assertRaisesRegex(cloud.CloudError, 'UNEXPECTED_ARCHIVE_RETENTION'):
+                    cloud.ensure_archive_retention(self.s3, key, version, minimum)
+                self.assertFalse(self.s3.retention_puts)
+
     def test_prune_keeps_seven_dates_and_last_sunday_and_removes_expired_versions(self):
         points = [self.remote_point(day) for day in range(12) if (self.clock - timedelta(days=day)).astimezone(local.ALMATY).weekday() != 6]
         points.append(self.remote_point(17))  # the last successfully published Sunday is outside the daily set
@@ -437,6 +528,25 @@ class CloudTests(unittest.TestCase):
 
 
 class SDKCompatibilityTests(unittest.TestCase):
+    def test_sdk_missing_retention_is_set_on_exact_version_and_read_back(self):
+        try:
+            from botocore.stub import Stubber
+        except ImportError:
+            self.skipTest('Run also in the isolated boto3 compatibility environment')
+        s3 = cloud.client({'access_key_id': 'synthetic-access', 'secret_access_key': 'synthetic-secret'})
+        until = datetime(2026, 12, 1, tzinfo=timezone.utc)
+        target = {'Bucket': cloud.BUCKET, 'Key': 'synthetic', 'VersionId': 'version-1'}
+        with Stubber(s3) as stub:
+            stub.add_client_error('get_object_retention', service_error_code='ObjectLockConfigurationNotFoundError',
+                                  http_status_code=404, expected_params=target)
+            stub.add_response('put_object_retention', {},
+                              {**target, 'Retention': {'Mode': 'COMPLIANCE', 'RetainUntilDate': until}})
+            stub.add_response('get_object_retention', {'Retention': {'Mode': 'COMPLIANCE', 'RetainUntilDate': until}}, target)
+            self.assertEqual(cloud.ensure_archive_retention(s3, 'synthetic', 'version-1', until), until)
+            stub.assert_no_pending_responses()
+        self.assertEqual(cloud.error_code(S3Error('ObjectLockConfigurationNotFoundError')),
+                         'ObjectLockConfigurationNotFoundError')
+
     def test_sdk_serializes_lock_and_versioned_operations_without_contacting_ps(self):
         try:
             from botocore.stub import Stubber
