@@ -66,7 +66,8 @@ def error_code(error):
     public_codes = {'404', 'NotFound', 'AccessDenied', 'InvalidAccessKeyId', 'SignatureDoesNotMatch',
                     'NoSuchKey', 'NoSuchBucket', 'NoSuchVersion', 'NoSuchUpload', 'InvalidBucketState',
                     'InvalidRequest', 'RequestTimeout', 'SlowDown', 'ServiceUnavailable', 'InternalError',
-                    'InvalidArgument', 'InvalidDigest', 'BadDigest', 'RequestTimeTooSkewed'}
+                    'InvalidArgument', 'InvalidDigest', 'BadDigest', 'RequestTimeTooSkewed',
+                    'ObjectLockConfigurationNotFoundError'}
     return value if isinstance(value, str) and value in public_codes else 'REMOTE_OPERATION_FAILED'
 
 
@@ -310,6 +311,26 @@ def retain(s3, key, version, minimum):
     return until
 
 
+def ensure_archive_retention(s3, key, version, minimum):
+    try:
+        retention = s3.get_object_retention(Bucket=BUCKET, Key=key, VersionId=version).get('Retention', {})
+    except Exception as error:
+        if error_code(error) != 'ObjectLockConfigurationNotFoundError':
+            raise
+        retention = {}
+    if retention:
+        until = retention.get('RetainUntilDate')
+        if retention.get('Mode') != 'COMPLIANCE' or not isinstance(until, datetime) or until.tzinfo is None:
+            raise CloudError('UNEXPECTED_ARCHIVE_RETENTION')
+        if until >= minimum:
+            return until
+    # Some S3-compatible multipart completions omit the requested retention.
+    # Protect this exact uploaded version and verify it before publishing a receipt.
+    s3.put_object_retention(Bucket=BUCKET, Key=key, VersionId=version,
+                           Retention={'Mode': 'COMPLIANCE', 'RetainUntilDate': minimum})
+    return retain(s3, key, version, minimum)
+
+
 def download_hash(s3, key, version, expected_size):
     response = s3.get_object(Bucket=BUCKET, Key=key, VersionId=version)
     total, hasher = 0, hashlib.sha256()
@@ -434,12 +455,7 @@ def publish(s3, manifest, config):
     point['retain_until_utc'] = until.isoformat()
     local.write_json(preparation, point)
     version = upload_file(s3, cipher, archive_key, point['sha256'], until, directory)
-    retention = s3.get_object_retention(Bucket=BUCKET, Key=archive_key, VersionId=version).get('Retention', {})
-    current_until = retention.get('RetainUntilDate')
-    if retention.get('Mode') == 'COMPLIANCE' and isinstance(current_until, datetime) and current_until < until:
-        s3.put_object_retention(Bucket=BUCKET, Key=archive_key, VersionId=version,
-                               Retention={'Mode': 'COMPLIANCE', 'RetainUntilDate': until})
-    retain(s3, archive_key, version, until)
+    ensure_archive_retention(s3, archive_key, version, until)
     if download_hash(s3, archive_key, version, point['size_bytes']) != point['sha256']:
         raise CloudError('CLOUD_DOWNLOAD_HASH_MISMATCH')
     point.update(archive_version=version, uploaded_at_utc=now().isoformat(), restore_exercised=False)
