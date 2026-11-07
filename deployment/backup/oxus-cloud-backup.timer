@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry OXUS Production cloud uploads hourly, without creating a new local backup
+
+[Timer]
+OnCalendar=*-*-* *:10:00 Asia/Almaty
+AccuracySec=1min
+RandomizedDelaySec=0
+Persistent=true
+Unit=oxus-cloud-backup.service
+
+[Install]
+WantedBy=timers.target

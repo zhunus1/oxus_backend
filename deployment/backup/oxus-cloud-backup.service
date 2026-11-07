@@ -1,0 +1,27 @@
+[Unit]
+Description=OXUS Production encrypted PS Cloud backup upload
+Requires=docker.service
+Wants=network-online.target
+After=docker.service network-online.target oxus-local-backup@production.service
+RequiresMountsFor=/var/backups/oxus-cloud/production /var/backups/oxus-backend/production
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/lib/oxus-backup/oxus_cloud_backup.py run
+TimeoutStartSec=90min
+TimeoutStopSec=30s
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=50%
+MemoryMax=768M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/oxus-cloud/production
+StandardOutput=journal
+StandardError=journal

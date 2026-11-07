@@ -106,7 +106,10 @@ jobs:
           bash -n deployment/deploy.sh
           bash -n deployment/ssh-deploy.sh
           bash -n deployment/install-ci.sh
-          python3 -m unittest discover -s deployment/tests -v
+          bash -n deployment/backup/install-cloud.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends age python3-boto3
+          /usr/bin/python3 -m unittest discover -s deployment/tests -v
 
       - name: Validate local Compose configuration
         run: docker compose -f compose.yaml config --quiet
