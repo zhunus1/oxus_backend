@@ -161,7 +161,7 @@ before(async () => {
       AuthController,
     ],
     providers: [
-      { provide: AuthService, useValue: new AuthService(new UsersService(new UsersRepository(prisma), journey), jwt, {}, new CookieService(), {}, {}) },
+      { provide: AuthService, useValue: new AuthService(new UsersService(new UsersRepository(prisma), journey), jwt, {}, new CookieService(jwt), {}, {}) },
       { provide: PrismaService, useValue: prisma },
       { provide: Access, useValue: access },
       { provide: AdminService, useValue: new AdminService(prisma, journey, {}, {}) },
