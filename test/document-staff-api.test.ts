@@ -7,6 +7,7 @@ import { docxParts, syntheticDocxOfSize, syntheticZip } from "./fixtures/student
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { request as nativeRequest } from "node:http";
 import { before, after, test } from "node:test";
 import { Test } from "@nestjs/testing";
 import { Logger, ValidationPipe } from "@nestjs/common";
@@ -332,6 +333,54 @@ test("STUDENT_PHOTO accepts a photo for staff and student uploads without changi
   assert(filtered.body.data.every((doc: any) => doc.documentType === "STUDENT_PHOTO"));
 });
 
+/** Require a complete denial before the upload ends, without racing a 50 MiB write against an early closed socket. */
+async function deniedMultipartBeforeBodyEnd(method: string, path: string, bearer?: string): Promise<{ status: number; body: unknown }> {
+  const boundary = "oxus-guard-order";
+  const preamble = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="oversize.pdf"\r\nContent-Type: application/pdf\r\n\r\n`;
+  const ending = `\r\n--${boundary}--\r\n`;
+  return new Promise((resolve, reject) => {
+    const outgoing = nativeRequest(
+      {
+        hostname: "127.0.0.1",
+        port: app.getHttpServer().address().port,
+        path,
+        method: method.toUpperCase(),
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": Buffer.byteLength(preamble) + 50 * 1024 * 1024 + 1 + Buffer.byteLength(ending),
+          Connection: "close",
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        },
+      },
+      incoming => {
+        let text = "";
+        incoming.setEncoding("utf8");
+        incoming.on("data", chunk => {
+          text += chunk;
+          if (text.length > 65536) outgoing.destroy(new Error("Oversized denial response"));
+        });
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          try {
+            assert(incoming.complete, "A transport error is not an authorization response");
+            resolve({ status: incoming.statusCode ?? 0, body: JSON.parse(text) });
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error("Invalid denial response", { cause: error }));
+          } finally {
+            outgoing.destroy();
+          }
+        });
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.setTimeout(5000, () => outgoing.destroy(new Error("Guard did not reject before multipart completion")));
+    // Deliberately omit the remaining file and final boundary. If parsing or
+    // buffering precedes the guard, no valid denial arrives and this test fails.
+    outgoing.write(preamble);
+    outgoing.write(Buffer.alloc(1024));
+  });
+}
+
 const routes = ["list", "detail", "upload", "download", "version", "metadata", "delete"];
 for (const role of ["STUDENT", "SCHOOLBOY", "SALES_MANAGER", "SUPPORT", "foreign EXPERT", "no JWT"])
   for (const route of routes)
@@ -341,11 +390,15 @@ for (const role of ["STUDENT", "SCHOOLBOY", "SALES_MANAGER", "SUPPORT", "foreign
       const beforeCalls = calls;
       const method = route === "upload" ? "post" : ["version", "metadata"].includes(route) ? "patch" : route === "delete" ? "delete" : "get";
       const path = ["list", "upload"].includes(route) ? base() : `${base()}/${doc.id}${route === "download" ? "/file" : route === "version" ? "/new-version" : ""}`;
-      const req = role === "no JWT" ? request(app.getHttpServer())[method](`/api/v1${path}`) : http(actor, method, path);
-      // Deliberately oversized upload demonstrates guards precede buffering/file validation (403, not 413).
-      if (["upload", "version"].includes(route)) req.attach("file", role === "no JWT" ? fixture() : Buffer.alloc(50 * 1024 * 1024 + 1), "oversize.pdf");
-      else if (["metadata", "delete"].includes(route)) req.send({ ...snap(doc), ...(route === "metadata" ? { title: "Forbidden" } : {}) });
-      const result = await req.expect(role === "no JWT" ? 401 : 403);
+      let result;
+      if (["upload", "version"].includes(route)) {
+        result = await deniedMultipartBeforeBodyEnd(method, `/api/v1${path}`, role === "no JWT" ? undefined : token(actor));
+        assert.equal(result.status, role === "no JWT" ? 401 : 403);
+      } else {
+        const req = role === "no JWT" ? request(app.getHttpServer())[method](`/api/v1${path}`) : http(actor, method, path);
+        if (["metadata", "delete"].includes(route)) req.send({ ...snap(doc), ...(route === "metadata" ? { title: "Forbidden" } : {}) });
+        result = await req.expect(role === "no JWT" ? 401 : 403);
+      }
       assert.equal(calls, beforeCalls);
       assert.deepEqual(await row(doc.id), doc);
       assert.doesNotMatch(JSON.stringify(result.body), /fileKey|169\.254|operationId/);
