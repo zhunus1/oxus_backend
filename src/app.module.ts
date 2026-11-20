@@ -41,6 +41,7 @@ import { ContractModule } from "./modules/contract/contract.module";
 import { AccountModule } from "./modules/account/account.module";
 import { TaskModule } from "./modules/task/task.module";
 import { CollabMeetingModule } from "./modules/collab-meeting/collab-meeting.module";
+import { WazzupModule } from "./modules/wazzup/wazzup.module";
 
 /** Composes application modules and enables discovery of scheduled recovery jobs. */
 @Module({
@@ -102,6 +103,7 @@ import { CollabMeetingModule } from "./modules/collab-meeting/collab-meeting.mod
     AccountModule,
     TaskModule,
     CollabMeetingModule,
+    WazzupModule,
   ],
 })
 export class AppModule {}

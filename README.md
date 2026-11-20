@@ -4,7 +4,7 @@ NestJS backend for the OxusEdu platform. The project uses Node.js 22, Yarn 4 thr
 
 ## Run locally with Docker
 
-Docker is the recommended local-development setup. It uses isolated development credentials and does not pass values from the repository's `.env` into the containers.
+Docker is the recommended local-development setup. It uses isolated development credentials. The optional Wazzup integration passes only explicitly configured `WAZZUP_*` settings from the environment; it is disabled by default.
 
 ```bash
 docker compose up --build
@@ -54,7 +54,7 @@ LOCAL_BACKEND_PORT=4100 LOCAL_POSTGRES_PORT=56432 docker compose up --build
 
 ### Environment file roles
 
-- Root `.env` is for running Nest directly on the host. Docker Compose also reads its `LOCAL_*` values for published host ports, but does not inject the file into the backend container.
+- Root `.env` is for running Nest directly on the host. Docker Compose also reads its `LOCAL_*` values for published host ports and optional `WAZZUP_*` settings, but does not inject the file into the backend container.
 - Root `.env.example` is the safe, copy-ready local template.
 - `deployment/.env` is required for server deployments and must contain the real server configuration.
 - `deployment/.env.example` is the deployment template. The deploy script never falls back to the local root `.env`.
@@ -95,6 +95,10 @@ yarn build
 ```
 
 `yarn test:e2e` boots the real `AppModule` and checks `/api/v1/health`. Supply a disposable loopback PostgreSQL `DATABASE_URL` ending in `_test`, `SALES_V2_TEST_REDIS_URL` (or `REDIS_URL`), and a disposable loopback HTTP MinIO `AWS_MINIO_ENDPOINT` with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The PostgreSQL user needs permission to create databases. The runner generates Prisma Client at the existing path, creates and migrates its own temporary database, and removes that database afterward. It uses an empty working directory with fixture JWT/Jitsi settings, so application startup does not read the project's `.env`. Redis and MinIO must be dedicated test services; the runner leaves their lifecycle to the caller. It never requires a production database or a production Jitsi key. Jest CLI options can be passed after `yarn test:e2e`, for example `--detectOpenHandles`.
+
+## Wazzup chats
+
+The opt-in integration provides WhatsApp lead cards and a general chat window for ADMIN and SALES_MANAGER. Sales sessions contain only phones from assigned leads; EXPERT access is not enabled. Configure the separate test Wazzup account and full API key before enabling it. See [setup, API contract, and live verification](src/modules/wazzup/README.md).
 
 ## Deployment
 

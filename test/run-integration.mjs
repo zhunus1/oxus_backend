@@ -6,6 +6,7 @@ const environment = testChildEnvironment(process.env.DATABASE_URL);
 const base = localTestDatabaseUrl(environment.DATABASE_URL);
 localTestRedisUrl(environment.SALES_V2_TEST_REDIS_URL);
 const suites = [
+  "wazzup-http.test.ts",
   "phase4-reporting.test.ts",
   "openapi-contract.test.ts",
   "phase3-production-blockers.test.ts",
