@@ -36,6 +36,7 @@ package.server.json
 yarn.lock.server
 
 # Files not required to build the backend image
+docs
 deployment
 test
 README.md
