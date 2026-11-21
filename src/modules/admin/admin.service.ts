@@ -13,6 +13,7 @@ import { FinanceService } from "./finance.service";
 import { UserJourneyLogService } from "src/modules/user-journey/user-journey-log.service";
 import { USER_JOURNEY_EVENT } from "src/modules/user-journey/user-journey.constants";
 import * as bcrypt from "bcrypt";
+import { WazzupAccessService } from "../wazzup/wazzup-access.service";
 
 const studentListSelect = {
   id: true,
@@ -69,6 +70,7 @@ export class AdminService {
     private readonly userJourneyLog: UserJourneyLogService,
     private readonly financeService: FinanceService,
     private readonly leadRealtime: LeadRealtimeGateway,
+    private readonly wazzupAccess: WazzupAccessService,
   ) {}
 
   private mapToStudentWithStatus(user: StudentWithStatusRow) {
@@ -622,7 +624,24 @@ export class AdminService {
     return user;
   }
 
-  /** Updates account fields and revokes CRM sessions when its role changes. */
+  async blockUser(id: number) {
+    try {
+      const { user, revoked } = await this.prisma.$transaction(async tx => {
+        const revoked = await this.wazzupAccess.revocableUsers(tx, { id });
+        const user = await tx.user.update({ where: { id }, data: { deletedAt: new Date() }, select: ADMIN_USER_LIST_SELECT });
+        await this.wazzupAccess.invalidateUsers(tx, revoked);
+        return { user, revoked };
+      });
+      this.leadRealtime.revokeUser(id);
+      await this.wazzupAccess.synchronizeUsers(revoked);
+      return user;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") throw new NotFoundException(`User with id ${id} not found`);
+      throw error;
+    }
+  }
+
+  /** Updates account fields and durably retires provider access on role changes. */
   async updateAdminUser(id: number, dto: AdminPatchUserDto, actorUserId: number) {
     const existing = await this.prisma.user.findUnique({ where: { id } });
     if (!existing) {
@@ -665,7 +684,14 @@ export class AdminService {
       data.password = await bcrypt.hash(dto.password, 10);
     }
 
-    const user = await this.prisma.$transaction(async tx => {
+    const { user, revoked } = await this.prisma.$transaction(async tx => {
+      if (dto.roleId !== undefined) {
+        // Role -> User lock order also covers a role-policy edit in another request.
+        await tx.$queryRaw`SELECT "id" FROM "Role" WHERE "id" = ${dto.roleId} FOR KEY SHARE`;
+        await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${id} FOR NO KEY UPDATE`;
+      }
+      const current = dto.roleId !== undefined ? await tx.user.findUniqueOrThrow({ where: { id }, select: { roleId: true } }) : undefined;
+      const revoked = current && current.roleId !== dto.roleId ? await this.wazzupAccess.revocableUsers(tx, { id }) : [];
       const updated = await tx.user.update({
         where: { id },
         data,
@@ -675,9 +701,11 @@ export class AdminService {
         // Also repair legacy experts on save without reactivating an existing profile.
         await tx.consultantProfile.upsert({ where: { userId: id }, create: { userId: id }, update: {} });
       }
-      return updated;
+      await this.wazzupAccess.invalidateUsers(tx, revoked);
+      return { user: updated, revoked };
     });
     if (dto.roleId !== undefined) this.leadRealtime.revokeUser(id);
+    await this.wazzupAccess.synchronizeUsers(revoked);
     return user;
   }
 }

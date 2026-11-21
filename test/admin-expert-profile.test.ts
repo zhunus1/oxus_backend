@@ -1,3 +1,4 @@
+import { wazzupOff } from "./wazzup-off.fixture";
 /** Run after build/migrations against a disposable local *_test database. */
 import "reflect-metadata";
 import assert from "node:assert/strict";
@@ -107,7 +108,7 @@ before(async () => {
     controllers: [AdminController, UsersController, SalesLeadController],
     providers: [
       { provide: PrismaService, useValue: prisma },
-      { provide: AdminService, useValue: new AdminService(prisma, journey, {}, realtime) },
+      { provide: AdminService, useValue: new AdminService(prisma, journey, {}, realtime, wazzupOff) },
       { provide: FinanceService, useValue: {} },
       { provide: LeadRealtimeGateway, useValue: realtime },
       { provide: UsersService, useValue: new UsersService(new UsersRepository(prisma), journey) },

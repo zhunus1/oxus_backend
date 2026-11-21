@@ -4,6 +4,7 @@ import type { PrismaService } from "src/database/prisma.service";
 import { LEAD_PERMISSION } from "src/modules/lead/domain/lead.constants";
 import type { WazzupClient } from "./wazzup.client";
 import { WazzupService } from "./wazzup.service";
+import type { WazzupAccessService } from "./wazzup-access.service";
 
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 
@@ -13,9 +14,10 @@ describe("WazzupService", () => {
   const listLeads = jest.fn();
   const iframe = jest.fn();
   const channels = jest.fn();
+  const withGrant = jest.fn();
   const prisma = { user: { findUnique: findUser }, lead: { findFirst: findLead, findMany: listLeads } } as unknown as PrismaService;
   const client = { iframe, channels } as unknown as WazzupClient;
-  const service = new WazzupService(prisma, client, new ConfigService({ WAZZUP_CHANNEL_ID: "test-channel" }));
+  const service = new WazzupService(prisma, client, new ConfigService({ WAZZUP_CHANNEL_ID: "test-channel" }), { withGrant } as unknown as WazzupAccessService);
   const actor = (role = "SALES_MANAGER") => ({
     id: 17,
     firstname: "Current",
@@ -31,6 +33,7 @@ describe("WazzupService", () => {
     findLead.mockResolvedValue(lead);
     listLeads.mockResolvedValue([lead]);
     iframe.mockResolvedValue({ url: "https://123.wazzup24.com/chat?token=fixture" });
+    withGrant.mockImplementation((id: number, work: (providerId: string, validate: () => Promise<void>) => Promise<unknown>) => work(String(id), async () => undefined));
   });
 
   it.each([
@@ -53,8 +56,7 @@ describe("WazzupService", () => {
     expect(iframe).toHaveBeenCalledWith(
       {
         user: { id: "17", name: "Current User" },
-        scope: "card",
-        filter: [{ chatType: "whatsapp", chatId: "77001234567", name: "Client" }],
+        scope: "global",
         activeChat: { chatType: "whatsapp", chatId: "77001234567", channelId: "test-channel" },
       },
       [{ id: "lead-8", responsibleUserId: "17", name: "Client", contactData: [{ chatType: "whatsapp", chatId: "77001234567" }] }],
@@ -68,6 +70,14 @@ describe("WazzupService", () => {
     expect(iframe).not.toHaveBeenCalled();
   });
 
+  it("uses the current provider generation for the iframe and contact owner without changing CRM identity", async () => {
+    withGrant.mockImplementation((_id: number, work: (providerId: string, validate: () => Promise<void>) => Promise<unknown>) => work("oxus-17-2", async () => undefined));
+    await service.leadIframe(17, 8);
+    expect(iframe.mock.calls[0][0].user.id).toBe("oxus-17-2");
+    expect(iframe.mock.calls[0][1][0].responsibleUserId).toBe("oxus-17-2");
+    expect(findLead.mock.calls[0][0].where.assignedSalesManagerId).toBe(17);
+  });
+
   it.each([null, "", "invalid", "+7 700 123 45 67 ext 9", "+01234567890", "00000000000"])("rejects absent or malformed lead phones: %s", async phoneNumber => {
     findLead.mockResolvedValue({ ...lead, phoneNumber });
     await expect(service.leadIframe(17, 8)).rejects.toBeInstanceOf(BadRequestException);
@@ -79,14 +89,14 @@ describe("WazzupService", () => {
     expect(findLead).not.toHaveBeenCalled();
   });
 
-  it("builds the Sales general window from assigned CRM phones, deduplicating chats and excluding invalid phones", async () => {
+  it("opens the Sales global window with only owned valid contacts synchronized", async () => {
     listLeads.mockResolvedValue([lead, { ...lead, id: 9 }, { ...lead, id: 10, phoneNumber: "invalid" }]);
     await service.globalIframe(17);
     expect(listLeads).toHaveBeenCalledWith(
       expect.objectContaining({ where: { assignedSalesManagerId: 17, acceptedAt: { not: null }, deletedAt: null, phoneNumber: { not: null } }, take: 1001 }),
     );
     const [payload, contacts] = iframe.mock.calls[0];
-    expect(payload).toEqual({ user: { id: "17", name: "Current User" }, scope: "card", filter: [{ chatType: "whatsapp", chatId: "77001234567", name: "Client" }] });
+    expect(payload).toEqual({ user: { id: "17", name: "Current User" }, scope: "global" });
     expect(contacts.map((contact: { id: string }) => contact.id)).toEqual(["lead-8", "lead-9"]);
   });
 

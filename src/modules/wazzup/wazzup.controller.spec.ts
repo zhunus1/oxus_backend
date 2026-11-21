@@ -7,6 +7,7 @@ import { PrismaService } from "src/database/prisma.service";
 import { LEAD_PERMISSION } from "src/modules/lead/domain/lead.constants";
 import { WazzupClient } from "./wazzup.client";
 import { WazzupModule } from "./wazzup.module";
+import { WazzupAccessService } from "./wazzup-access.service";
 
 jest.mock("src/database/prisma.service", () => ({ PrismaService: class {} }));
 
@@ -84,6 +85,8 @@ describe("Wazzup HTTP authorization", () => {
       .useValue(new ConfigService({ WAZZUP_CHANNEL_ID: "fixture-channel" }))
       .overrideProvider(WazzupClient)
       .useValue({ iframe, channels })
+      .overrideProvider(WazzupAccessService)
+      .useValue({ withGrant: (id: number, work: (providerId: string, validate: () => Promise<void>) => Promise<unknown>) => work(String(id), async () => undefined) })
       .compile();
     app = module.createNestApplication();
     app.setGlobalPrefix("api/v1");
@@ -116,14 +119,15 @@ describe("Wazzup HTTP authorization", () => {
 
   it("ignores caller-supplied user, phone and scope, returning a non-cacheable owned lead session", async () => {
     const result = await http(2, "leads/10/iframe")
-      .send({ user: { id: "1" }, phone: "+77004445566", scope: "global" })
+      .send({ user: { id: "1" }, phone: "+77004445566", scope: "card", filter: [{ chatType: "whatsapp", chatId: "77004445566" }] })
       .expect(200);
     expect(result.headers["cache-control"]).toBe("no-store");
     expect(result.headers.pragma).toBe("no-cache");
     const [payload, contacts] = iframe.mock.calls[0];
     expect(payload.user).toEqual({ id: "2", name: "Database User 2" });
-    expect(payload.scope).toBe("card");
-    expect(payload.filter.map((chat: { chatId: string }) => chat.chatId)).toEqual(["77001112233"]);
+    expect(payload.scope).toBe("global");
+    expect(payload).not.toHaveProperty("filter");
+    expect(payload.activeChat.chatId).toBe("77001112233");
     expect(contacts[0].responsibleUserId).toBe("2");
     expect(Object.keys(result.body)).toEqual(["url"]);
   });
@@ -138,13 +142,13 @@ describe("Wazzup HTTP authorization", () => {
     expect(iframe).not.toHaveBeenCalled();
   });
 
-  it("keeps the Sales general window restricted to owned CRM phones", async () => {
+  it("uses role-enforced global scope for Sales and synchronizes only owned contacts", async () => {
     await http(2, "iframe").expect(200);
     expect(iframe.mock.calls[0][0]).toEqual({
       user: { id: "2", name: "Database User 2" },
-      scope: "card",
-      filter: [{ chatType: "whatsapp", chatId: "77001112233", name: "Own client" }],
+      scope: "global",
     });
+    expect(iframe.mock.calls[0][1].map((contact: { id: string }) => contact.id)).toEqual(["lead-10"]);
   });
 
   it("allows ADMIN to open global chats and another manager's lead", async () => {

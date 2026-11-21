@@ -10,8 +10,7 @@ export interface WazzupChat {
 
 export interface WazzupIframeRequest {
   user: { id: string; name: string };
-  scope: "global" | "card";
-  filter?: WazzupChat[];
+  scope: "global";
   activeChat?: { chatType: "whatsapp"; chatId: string; channelId?: string };
 }
 
@@ -35,6 +34,19 @@ export class WazzupClient {
 
   constructor(private readonly config: ConfigService) {}
 
+  isEnabled(): boolean {
+    return this.config.get<string>("WAZZUP_ENABLED", "false").trim().toLowerCase() === "true" && Boolean(this.config.get<string>("WAZZUP_API_KEY", "").trim());
+  }
+
+  assertConfigured(): void {
+    if (!this.isEnabled()) throw new ServiceUnavailableException({ code: "WAZZUP_NOT_CONFIGURED", message: "Wazzup is not configured" });
+  }
+
+  async revokeUser(userId: string): Promise<void> {
+    if (!/^[A-Za-z0-9:_-]{1,64}$/.test(userId)) throw new Error("Invalid Wazzup user ID");
+    await this.request("DELETE", `users/${userId}`);
+  }
+
   async channels(): Promise<WazzupChannel[]> {
     const data = await this.request("GET", "channels");
     if (
@@ -52,8 +64,14 @@ export class WazzupClient {
     const signal = AbortSignal.timeout(30_000);
     const channels = await this.channels();
     const channelId = this.config.get<string>("WAZZUP_CHANNEL_ID", "").trim();
-    const available = channels.some(channel => ["whatsapp", "wapi"].includes(channel.transport) && channel.state === "active" && (!channelId || channel.channelId === channelId));
-    if (!available) throw new ServiceUnavailableException({ code: "WAZZUP_CHANNEL_UNAVAILABLE", message: "No active configured WhatsApp channel is available" });
+    const available = channels.filter(channel => ["whatsapp", "wapi"].includes(channel.transport) && channel.state === "active" && (!channelId || channel.channelId === channelId));
+    let session = payload;
+    if (payload.activeChat) {
+      const targetId = payload.activeChat.channelId || channelId || (available.length === 1 ? available[0].channelId : undefined);
+      if (!targetId || !available.some(channel => channel.channelId === targetId)) throw this.unavailableChannel();
+      session = { ...payload, activeChat: { ...payload.activeChat, channelId: targetId } };
+    }
+    if (!available.length) throw this.unavailableChannel();
     await revalidate?.();
     // Upserts the authenticated CRM user. No external work happens on startup.
     await this.request("POST", "users", [payload.user], signal);
@@ -61,7 +79,7 @@ export class WazzupClient {
       await this.request("POST", "contacts", contacts.slice(offset, offset + 100), signal);
     }
     await revalidate?.();
-    const data = await this.request("POST", "iframe", payload, signal);
+    const data = await this.request("POST", "iframe", session, signal);
     if (!this.isRecord(data) || typeof data.url !== "string") throw this.invalidResponse();
     let url: URL;
     try {
@@ -82,12 +100,14 @@ export class WazzupClient {
     return { url: data.url };
   }
 
-  private async request(method: "GET" | "POST", path: "channels" | "users" | "contacts" | "iframe", data?: unknown, signal?: AbortSignal): Promise<unknown> {
-    const enabled = this.config.get<string>("WAZZUP_ENABLED", "false").trim().toLowerCase() === "true";
+  private async request(
+    method: "GET" | "POST" | "DELETE",
+    path: "channels" | "users" | "contacts" | "iframe" | `users/${string}`,
+    data?: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const apiKey = this.config.get<string>("WAZZUP_API_KEY", "").trim();
-    if (!enabled || !apiKey) {
-      throw new ServiceUnavailableException({ code: "WAZZUP_NOT_CONFIGURED", message: "Wazzup is not configured" });
-    }
+    this.assertConfigured();
 
     try {
       const response = await axios.request<unknown>({
@@ -106,7 +126,8 @@ export class WazzupClient {
       // Axios errors contain the API key, customer data, and sometimes iframe tokens.
       if (error instanceof BadGatewayException) throw error;
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-      this.logger.warn(`Wazzup ${method} /${path} failed (status=${status ?? "unavailable"})`);
+      if (method === "DELETE" && status === 404) return;
+      this.logger.warn(`Wazzup ${method} /${path.startsWith("users/") ? "users/:id" : path} failed (status=${status ?? "unavailable"})`);
       if (axios.isAxiosError(error) && (["ECONNABORTED", "ETIMEDOUT"].includes(error.code ?? "") || (error.code === "ERR_CANCELED" && signal?.aborted))) {
         throw new GatewayTimeoutException({ code: "WAZZUP_TIMEOUT", message: "Wazzup request timed out" });
       }
@@ -126,5 +147,9 @@ export class WazzupClient {
 
   private invalidResponse() {
     return new BadGatewayException({ code: "WAZZUP_INVALID_RESPONSE", message: "Wazzup returned an invalid response" });
+  }
+
+  private unavailableChannel() {
+    return new ServiceUnavailableException({ code: "WAZZUP_CHANNEL_UNAVAILABLE", message: "No unambiguous active configured WhatsApp channel is available" });
   }
 }

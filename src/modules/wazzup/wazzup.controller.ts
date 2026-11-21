@@ -48,7 +48,7 @@ export class WazzupController {
   @ApiOperation({
     summary: "Open Wazzup chats for the current CRM user",
     description:
-      "ADMIN gets a global window. Sales gets a card-scoped window filtered to assigned, accepted CRM leads. Wazzup channel access and roles must also be configured in Wazzup.",
+      "Uses global scope so Wazzup enforces employee roles and contact ownership. Sales synchronizes only assigned, accepted CRM leads; channel roles must also be configured in Wazzup.",
   })
   @ApiResponse({ status: 200, schema: iframeSchema })
   globalIframe(@Req() req: UserRequest) {

@@ -1,3 +1,4 @@
+import { wazzupOff } from "./wazzup-off.fixture";
 /** Run against a disposable local *_test database after nest build and migrations. */
 import "reflect-metadata";
 import assert from "node:assert/strict";
@@ -622,7 +623,7 @@ test("C03 direct repository/service reads and admin CRM/finance projections are 
   for (const value of [await repo.findAllByStatus(undefined, admin, { limit: 100 }), await contractService.getAllContracts(undefined, expert, { limit: 100 })])
     assert.ok(assertSafeJson(value).data.some((c: any) => c.id === contract.id));
   const finance = new (klass("modules/admin/finance.service", "FinanceService"))(prisma);
-  const adminService = new (klass("modules/admin/admin.service", "AdminService"))(prisma, {}, finance, realtime);
+  const adminService = new (klass("modules/admin/admin.service", "AdminService"))(prisma, {}, finance, realtime, wazzupOff);
   assert.ok(assertSafeJson(await adminService.getCrmStudentById(student.id)).detail.contracts.some((c: any) => c.id === contract.id));
   assert.equal(assertSafeJson(await finance.listContracts({ studentId: student.id, sortBy: "createdAt", sortOrder: "desc" })).data[0].id, contract.id);
   assert.ok(assertSafeJson(await finance.getExpertEarnings(expert, { limit: 100 })).contracts.some((c: any) => c.id === contract.id));

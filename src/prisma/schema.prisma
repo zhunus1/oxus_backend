@@ -220,6 +220,7 @@ model User {
   consultationsAsClient        Consultation[]            @relation("ClientConsultations")
   messagesSent                 Message[]
   auditLogs                    AuditLog[]
+  wazzupAccess                 WazzupAccess?
   transactions                 Transaction[]
   notificationLogs             NotificationLog[]
   eventsSpoken                 Event[]                   @relation("EventSpeaker") // Выступления эксперта
@@ -262,6 +263,14 @@ model User {
 
   @@index([email])
   @@index([phoneNumber])
+}
+
+/// Internal Wazzup identity lifecycle; never exposed in CRM user responses.
+model WazzupAccess {
+  userId            Int     @id
+  generation        Int     @default(1)
+  revocationPending Boolean @default(true)
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 /// События пути студента (аналитика воронки / CRM)

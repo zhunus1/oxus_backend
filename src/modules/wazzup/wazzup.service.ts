@@ -5,8 +5,9 @@ import { normalizePhoneNumber } from "src/modules/lead/domain/phone-number";
 import { LEAD_PERMISSION } from "src/modules/lead/domain/lead.constants";
 import { WazzupClient } from "./wazzup.client";
 import type { WazzupContact, WazzupIframeRequest } from "./wazzup.client";
+import { WazzupAccessService } from "./wazzup-access.service";
 
-// Bound both database work and the number of contacts embedded in a session.
+// Bound database work and contact synchronization before issuing a session.
 const MAX_SALES_CHATS = 1000;
 
 @Injectable()
@@ -15,6 +16,7 @@ export class WazzupService {
     private readonly prisma: PrismaService,
     private readonly client: WazzupClient,
     private readonly config: ConfigService,
+    private readonly access: WazzupAccessService,
   ) {}
 
   async channels(actorId: number) {
@@ -40,10 +42,8 @@ export class WazzupService {
       return contact ? [contact] : [];
     });
     if (!contacts.length) throw new ConflictException({ code: "WAZZUP_NO_CHATS", message: "No assigned leads with valid phone numbers" });
-    const chats = [...new Map(contacts.map(contact => [contact.contactData[0].chatId, { ...contact.contactData[0], name: contact.name }])).values()];
-    // A global Wazzup window can also expose unassigned incoming chats. Sales
-    // therefore receives a card-scoped session containing only current CRM phones.
-    return this.issue(actorId, actor.isAdmin, { user: actor.user, scope: "card", filter: chats }, contacts, leads);
+    // Wazzup enforces employee roles and contact ownership only in global scope.
+    return this.issue(actorId, actor.isAdmin, { user: actor.user, scope: "global" }, contacts, leads);
   }
 
   async leadIframe(actorId: number, leadId: number) {
@@ -63,8 +63,7 @@ export class WazzupService {
       actor.isAdmin,
       {
         user: actor.user,
-        scope: "card",
-        filter: [chat],
+        scope: "global",
         activeChat: { chatType: "whatsapp", chatId: chat.chatId, ...(channelId ? { channelId } : {}) },
       },
       actor.isAdmin ? [] : [contact],
@@ -86,11 +85,18 @@ export class WazzupService {
         throw new ConflictException({ code: "WAZZUP_ACCESS_CHANGED", message: "Lead access or phone changed; reopen the chat window" });
       }
     };
-    const result = await this.client.iframe(payload, contacts, revalidate);
-    // A permission/ownership change while the provider issued the link must not
-    // release that link to the caller. This does not revoke a provider session.
-    await revalidate();
-    return result;
+    return this.access.withGrant(actorId, async (providerId, validateGeneration) => {
+      const validate = async () => {
+        await revalidate();
+        await validateGeneration();
+      };
+      await validate();
+      const session = { ...payload, user: { ...payload.user, id: providerId } };
+      const ownedContacts = contacts.map(contact => ({ ...contact, responsibleUserId: providerId }));
+      const result = await this.client.iframe(session, ownedContacts, validate);
+      await validate();
+      return result;
+    });
   }
 
   private phone(value: string | null): string | null {

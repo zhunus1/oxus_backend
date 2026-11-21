@@ -7,7 +7,8 @@ import type { WazzupContact, WazzupIframeRequest } from "./wazzup.client";
 
 describe("WazzupClient", () => {
   const config = new ConfigService({ WAZZUP_ENABLED: "true", WAZZUP_API_KEY: "fixture-api-key" });
-  const payload: WazzupIframeRequest = { user: { id: "17", name: "Sales User" }, scope: "card", filter: [{ chatType: "whatsapp", chatId: "77001234567" }] };
+  const payload: WazzupIframeRequest = { user: { id: "17", name: "Sales User" }, scope: "global" };
+  const contactData: WazzupContact["contactData"] = [{ chatType: "whatsapp", chatId: "77001234567" }];
   const url = "https://12345678.wazzup24.com/chat/session?token=fixture-session";
   const response = (data: unknown) => ({ data }) as AxiosResponse;
   const client = new WazzupClient(config);
@@ -32,7 +33,7 @@ describe("WazzupClient", () => {
 
   it.each(["false", "", "0", "yes"])("never issues a session or synchronizes contacts when disabled (%s), even with a key", async enabled => {
     const disabled = new WazzupClient(new ConfigService({ WAZZUP_ENABLED: enabled, WAZZUP_API_KEY: "fixture-key-present" }));
-    await expect(disabled.iframe(payload, [{ id: "lead-8", responsibleUserId: "17", name: "Client", contactData: payload.filter! }])).rejects.toMatchObject({
+    await expect(disabled.iframe(payload, [{ id: "lead-8", responsibleUserId: "17", name: "Client", contactData }])).rejects.toMatchObject({
       response: { code: "WAZZUP_NOT_CONFIGURED" },
     });
     expect(request).not.toHaveBeenCalled();
@@ -52,6 +53,48 @@ describe("WazzupClient", () => {
         maxContentLength: 1024 * 1024,
       }),
     );
+  });
+
+  it("fills activeChat with the only eligible channel while retaining global scope", async () => {
+    allowChannel();
+    request.mockResolvedValueOnce(response(null)).mockResolvedValueOnce(response({ url }));
+    await client.iframe({ ...payload, activeChat: { chatType: "whatsapp", chatId: "77001234567" } });
+    expect(request.mock.calls.at(-1)![0].data).toEqual({ ...payload, activeChat: { chatType: "whatsapp", chatId: "77001234567", channelId: "channel" } });
+  });
+
+  it("does no writes when activeChat channel selection is ambiguous", async () => {
+    jest.spyOn(client, "channels").mockResolvedValue([activeChannel, { ...activeChannel, channelId: "second-channel" }]);
+    await expect(client.iframe({ ...payload, activeChat: { chatType: "whatsapp", chatId: "77001234567" } })).rejects.toMatchObject({
+      response: { code: "WAZZUP_CHANNEL_UNAVAILABLE" },
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not allow activeChat to bypass the configured channel", async () => {
+    const configured = new WazzupClient(new ConfigService({ WAZZUP_ENABLED: "true", WAZZUP_API_KEY: "fixture", WAZZUP_CHANNEL_ID: "channel" }));
+    jest.spyOn(configured, "channels").mockResolvedValue([activeChannel, { ...activeChannel, channelId: "second-channel" }]);
+    await expect(configured.iframe({ ...payload, activeChat: { chatType: "whatsapp", chatId: "77001234567", channelId: "second-channel" } })).rejects.toMatchObject({
+      response: { code: "WAZZUP_CHANNEL_UNAVAILABLE" },
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("revokes exactly one provider user and treats an already absent user as success", async () => {
+    request.mockRejectedValueOnce(new AxiosError("withheld", undefined, undefined, undefined, { status: 404 } as AxiosResponse));
+    await expect(client.revokeUser("oxus-17-1")).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "DELETE", url: "https://api.wazzup24.com/v3/users/oxus-17-1" }));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each([500, 429, 401])("does not mistake DELETE HTTP %i for a successful revoke", async status => {
+    request.mockRejectedValueOnce(new AxiosError("withheld", undefined, undefined, undefined, { status } as AxiosResponse));
+    await expect(client.revokeUser("17")).rejects.toBeInstanceOf(status === 429 ? ServiceUnavailableException : BadGatewayException);
+  });
+
+  it("does not call the provider to revoke users while OFF", async () => {
+    const disabled = new WazzupClient(new ConfigService({ WAZZUP_ENABLED: "false", WAZZUP_API_KEY: "fixture" }));
+    await expect(disabled.revokeUser("17")).rejects.toMatchObject({ response: { code: "WAZZUP_NOT_CONFIGURED" } });
+    expect(request).not.toHaveBeenCalled();
   });
 
   it.each([null, {}, [null], [{ channelId: "channel" }], { error: "FORBIDDEN", secret: "must-not-leak" }].map(data => ({ data })))(
@@ -87,7 +130,7 @@ describe("WazzupClient", () => {
   it("does not issue an iframe session after a contact sync failure", async () => {
     allowChannel();
     request.mockResolvedValueOnce(response(null)).mockRejectedValueOnce(new Error("fixture failure"));
-    const contact: WazzupContact = { id: "lead-8", responsibleUserId: "17", name: "Client", contactData: payload.filter! };
+    const contact: WazzupContact = { id: "lead-8", responsibleUserId: "17", name: "Client", contactData };
     await expect(client.iframe(payload, [contact])).rejects.toBeInstanceOf(BadGatewayException);
     expect(request).toHaveBeenCalledTimes(2);
   });
@@ -170,7 +213,7 @@ describe("WazzupClient", () => {
     await client.iframe(payload, [contact]);
     await client.iframe(payload, [contact]);
     const replacement = { ...contact, responsibleUserId: "18", contactData: [{ chatType: "whatsapp" as const, chatId: "77007654321" }] };
-    await client.iframe({ ...payload, user: { id: "18", name: "New owner" }, filter: replacement.contactData }, [replacement]);
+    await client.iframe({ ...payload, user: { id: "18", name: "New owner" } }, [replacement]);
     expect(request.mock.calls.filter(([call]) => call.url.endsWith("/contacts")).map(([call]) => call.data)).toEqual([[contact], [contact], [replacement]]);
   });
 

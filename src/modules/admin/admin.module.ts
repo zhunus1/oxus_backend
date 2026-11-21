@@ -11,9 +11,10 @@ import { FinanceService } from "./finance.service";
 import { UsersModule } from "./users/users.module";
 import { AuthModule } from "./auth/auth.module";
 import { PortraitModule } from "./portrait/portrait.module";
+import { WazzupModule } from "../wazzup/wazzup.module";
 
 @Module({
-  imports: [LeadRealtimeModule, JwtModule, UsersModule, AuthModule, PortraitModule, UserJourneyModule],
+  imports: [LeadRealtimeModule, JwtModule, UsersModule, AuthModule, PortraitModule, UserJourneyModule, WazzupModule],
   controllers: [AdminController, AnalyticsController],
   providers: [PrismaService, AdminService, AnalyticsService, FinanceService],
 })

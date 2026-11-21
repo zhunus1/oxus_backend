@@ -1,3 +1,4 @@
+import { wazzupOff } from "./wazzup-off.fixture";
 /** Uses an existing schema in a disposable local *_test DB; never applies migrations or contacts storage. */
 import "reflect-metadata";
 import assert from "node:assert/strict";
@@ -164,7 +165,7 @@ before(async () => {
       { provide: AuthService, useValue: new AuthService(new UsersService(new UsersRepository(prisma), journey), jwt, {}, new CookieService(jwt), {}, {}) },
       { provide: PrismaService, useValue: prisma },
       { provide: Access, useValue: access },
-      { provide: AdminService, useValue: new AdminService(prisma, journey, {}, {}) },
+      { provide: AdminService, useValue: new AdminService(prisma, journey, {}, {}, wazzupOff) },
       { provide: FinanceService, useValue: {} },
       { provide: LeadRealtimeGateway, useValue: {} },
       { provide: DocumentService, useValue: service },

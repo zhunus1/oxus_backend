@@ -1,3 +1,4 @@
+import { wazzupOff } from "./wazzup-off.fixture";
 /** Real HTTP, PostgreSQL, Redis queues and two-server WebSocket regressions. Run after nest build. */
 import "reflect-metadata";
 import assert from "node:assert/strict";
@@ -212,7 +213,7 @@ before(async () => {
       { provide: PrismaService, useValue: prisma },
       { provide: LeadRealtimeGateway, useValue: gateways[0] },
       { provide: FinanceService, useValue: {} },
-      { provide: AdminService, useValue: new AdminService(prisma, {}, {}, gateways[0]) },
+      { provide: AdminService, useValue: new AdminService(prisma, {}, {}, gateways[0], wazzupOff) },
     ],
   })
     .overrideGuard(JwtAuthGuard)

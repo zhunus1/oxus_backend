@@ -1,6 +1,5 @@
 import { PageQueryDto } from "src/common/dto/page-query.dto";
 import { financeListResponse, financeSummaryResponse, earningsResponse } from "src/common/openapi/flow-responses";
-import { LeadRealtimeGateway } from "../lead/realtime/lead-realtime.gateway";
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { Prisma } from "generated/prisma/client";
@@ -25,7 +24,6 @@ export class AdminController {
     private readonly prisma: PrismaService,
     private readonly adminService: AdminService,
     private readonly financeService: FinanceService,
-    private readonly leadRealtime: LeadRealtimeGateway,
   ) {}
 
   @Get("users")
@@ -71,7 +69,7 @@ export class AdminController {
     return this.adminService.updateAdminUser(id, dto, req.user.id);
   }
 
-  /** Blocks the account and revokes its active CRM sockets after persistence. */
+  /** Blocks the account and initiates CRM/provider session revocation. */
   @Patch("users/:id/block")
   @ApiOperation({ summary: "Soft-block user (sets deletedAt)" })
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -80,20 +78,7 @@ export class AdminController {
     if (req.user.id === id) {
       throw new BadRequestException("Cannot block your own account");
     }
-    try {
-      const user = await this.prisma.user.update({
-        where: { id },
-        data: { deletedAt: new Date() },
-        select: ADMIN_USER_LIST_SELECT,
-      });
-      this.leadRealtime.revokeUser(id);
-      return user;
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
-        throw new NotFoundException(`User with id ${id} not found`);
-      }
-      throw e;
-    }
+    return this.adminService.blockUser(id);
   }
 
   @Patch("users/:id/unblock")

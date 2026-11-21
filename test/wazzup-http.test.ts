@@ -5,11 +5,12 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
-import { ValidationPipe, type INestApplication } from "@nestjs/common";
+import { ServiceUnavailableException, ValidationPipe, type INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { JwtService } from "@nestjs/jwt";
+import { JwtModule, JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
+import { useContainer } from "class-validator";
 import type { PrismaService as PrismaServiceType } from "../src/database/prisma.service";
 import type { WazzupContact, WazzupIframeRequest } from "../src/modules/wazzup/wazzup.client";
 import { localTestDatabaseUrl } from "./runner-utils.mjs";
@@ -19,6 +20,12 @@ const built = createRequire(resolve("package.json"));
 const { PrismaService } = built("./dist/src/database/prisma.service.js");
 const { WazzupModule } = built("./dist/src/modules/wazzup/wazzup.module.js");
 const { WazzupClient } = built("./dist/src/modules/wazzup/wazzup.client.js");
+const { WazzupAccessService } = built("./dist/src/modules/wazzup/wazzup-access.service.js");
+const { AdminController } = built("./dist/src/modules/admin/admin.controller.js");
+const { AdminService } = built("./dist/src/modules/admin/admin.service.js");
+const { FinanceService } = built("./dist/src/modules/admin/finance.service.js");
+const { RoleRepository } = built("./dist/src/modules/admin/role/repository/role.repository.js");
+const { ExistsValidator } = built("./dist/src/common/validators/exists.validator.js");
 const prisma: PrismaServiceType = new PrismaService();
 const jwt = new JwtService();
 const secret = randomUUID();
@@ -28,11 +35,25 @@ const calls: { payload: WazzupIframeRequest; contacts: WazzupContact[] }[] = [];
 let beforeSession: (() => Promise<void>) | undefined;
 let afterSession: (() => Promise<void>) | undefined;
 let app: INestApplication;
+let mutationAccess: InstanceType<typeof WazzupAccessService>;
 let admin: number, salesA: number, salesB: number, expert: number, student: number;
 let leadA: number, leadB: number, unaccepted: number, deleted: number, sourceId: number;
 const tokens = new Map<number, string>();
 const url = "https://123.wazzup24.com/chat/review?token=fixture-only";
+const revocations: string[] = [];
+let revokeFailure = false;
+let enabled = true;
 const provider = {
+  isEnabled() {
+    return enabled;
+  },
+  assertConfigured() {
+    if (!enabled) throw new ServiceUnavailableException({ code: "WAZZUP_NOT_CONFIGURED" });
+  },
+  async revokeUser(id: string) {
+    revocations.push(id);
+    if (revokeFailure) throw new Error("fixture provider failure");
+  },
   async channels() {
     return [];
   },
@@ -77,7 +98,16 @@ before(async () => {
   unaccepted = (await lead(salesA, "+77006667788", null)).id;
   deleted = (await lead(salesA, "+77009990011")).id;
   await prisma.lead.update({ where: { id: deleted }, data: { deletedAt: new Date() } });
-  const module = await Test.createTestingModule({ imports: [WazzupModule] })
+  mutationAccess = new WazzupAccessService(prisma, provider, new ConfigService());
+  const module = await Test.createTestingModule({
+    imports: [WazzupModule, JwtModule],
+    controllers: [AdminController],
+    providers: [
+      { provide: ExistsValidator, useValue: new ExistsValidator(prisma) },
+      { provide: FinanceService, useValue: {} },
+      { provide: AdminService, useFactory: () => new AdminService(prisma, {}, {}, { revokeUser() {} }, mutationAccess) },
+    ],
+  })
     .overrideProvider(PrismaService)
     .useValue(prisma)
     .overrideProvider(ConfigService)
@@ -86,17 +116,22 @@ before(async () => {
     .useValue(provider)
     .compile();
   app = module.createNestApplication();
+  useContainer(module, { fallbackOnErrors: true });
   app.setGlobalPrefix("api/v1");
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidUnknownValues: false }));
   await app.listen(0, "127.0.0.1");
 });
 beforeEach(() => {
   calls.length = 0;
+  revocations.length = 0;
+  revokeFailure = false;
+  enabled = true;
   beforeSession = undefined;
   afterSession = undefined;
 });
 after(async () => {
   await app?.close();
+  await mutationAccess?.onModuleDestroy();
   await prisma.$disconnect();
   if (previousSecret === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = previousSecret;
@@ -124,12 +159,12 @@ test("assigned but unaccepted and deleted leads are excluded from Sales card and
   for (const id of [unaccepted, deleted]) await http(salesA, `leads/${id}/iframe`).expect(404);
   await http(salesA).expect(200);
   assert.deepEqual(
-    calls.at(-1)!.payload.filter?.map(chat => chat.chatId),
+    calls.at(-1)!.contacts.map(contact => contact.contactData[0].chatId),
     ["77001112233"],
   );
   await http(salesB).expect(200);
   assert.deepEqual(
-    calls.at(-1)!.payload.filter?.map(chat => chat.chatId),
+    calls.at(-1)!.contacts.map(contact => contact.contactData[0].chatId),
     ["77004445566"],
   );
   await http(admin, `leads/${unaccepted}/iframe`).expect(200);
@@ -156,7 +191,7 @@ test("reassignment immediately prevents the former owner from receiving new link
     await http(salesA, `leads/${leadA}/iframe`).expect(404);
     await http(salesA).expect(409);
     await http(salesB, `leads/${leadA}/iframe`).expect(200);
-    assert.equal(calls.at(-1)!.contacts[0].responsibleUserId, String(salesB));
+    assert.equal(calls.at(-1)!.contacts[0].responsibleUserId, `oxus-${salesB}-1`);
   } finally {
     await prisma.lead.update({ where: { id: leadA }, data: { assignedSalesManagerId: salesA } });
   }
@@ -232,4 +267,192 @@ test("concurrent repeated opens retain stable contact IDs and never modify CRM l
   await Promise.all(Array.from({ length: 5 }, () => http(salesA, `leads/${leadA}/iframe`).expect(200)));
   assert.equal(new Set(calls.map(call => call.contacts[0].id)).size, 1);
   assert.deepEqual(await prisma.lead.findUniqueOrThrow({ where: { id: leadA } }), before);
+});
+
+async function lifecycleFixture() {
+  const actor = await user("SALES_MANAGER");
+  const own = await lead(actor, "+77003334455");
+  await http(actor, `leads/${own.id}/iframe`).expect(200);
+  assert.deepEqual(revocations, [String(actor)]);
+  revocations.length = 0;
+  return { actor, leadId: own.id };
+}
+const adminRequest = (path: string) =>
+  request(app.getHttpServer())
+    .patch(`/api/v1/admin/${path}`)
+    .set("Authorization", `Bearer ${tokens.get(admin)}`);
+
+test("CRM block revokes the old provider ID; unblock issues a different ID and leaves CRM identity/contracts intact", async () => {
+  const { actor, leadId } = await lifecycleFixture();
+  assert.equal(calls.at(-1)!.payload.user.id, `oxus-${actor}-1`);
+  const blocked = await adminRequest(`users/${actor}/block`).expect(200);
+  assert.equal(blocked.body.id, actor);
+  assert.equal("wazzupAccess" in blocked.body, false);
+  assert.deepEqual(revocations, [`oxus-${actor}-1`]);
+  assert.deepEqual(await prisma.wazzupAccess.findUnique({ where: { userId: actor } }), { userId: actor, generation: 2, revocationPending: false });
+  await http(actor).expect(401);
+  await adminRequest(`users/${actor}/unblock`).expect(200);
+  const opened = await http(actor, `leads/${leadId}/iframe`).expect(200);
+  assert.deepEqual(Object.keys(opened.body), ["url"]);
+  assert.equal(calls.at(-1)!.payload.user.id, `oxus-${actor}-2`);
+  assert.equal(calls.at(-1)!.contacts[0].responsibleUserId, `oxus-${actor}-2`);
+  assert.equal(calls.at(-1)!.payload.scope, "global");
+  assert.equal("filter" in calls.at(-1)!.payload, false);
+  assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: leadId } })).assignedSalesManagerId, actor);
+});
+
+test("provider failures persist a pending revoke, deny restored grants, and survive a new coordinator instance", async () => {
+  const { actor, leadId } = await lifecycleFixture();
+  revokeFailure = true;
+  await adminRequest(`users/${actor}/block`).expect(200);
+  await adminRequest(`users/${actor}/block`).expect(200);
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).generation, 2);
+  await adminRequest(`users/${actor}/unblock`).expect(200);
+  const count = calls.length;
+  const denied = await http(actor, `leads/${leadId}/iframe`).expect(409);
+  assert.equal(denied.body.code, "WAZZUP_REVOKE_PENDING");
+  assert.equal(calls.length, count);
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, true);
+  revokeFailure = false;
+  const restarted = new WazzupAccessService(prisma, provider, new ConfigService());
+  try {
+    assert.equal(await restarted.withGrant(actor, async (id: string) => id), `oxus-${actor}-2`);
+  } finally {
+    await restarted.onModuleDestroy();
+  }
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, false);
+  await http(actor, `leads/${leadId}/iframe`).expect(200);
+  assert.equal(calls.at(-1)!.payload.user.id, `oxus-${actor}-2`);
+});
+
+test("independent coordinators serialize DELETE after in-flight issuance and withhold its URL", async () => {
+  const { actor, leadId } = await lifecycleFixture();
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const started = new Promise<void>(resolve => {
+    entered = resolve;
+  });
+  beforeSession = async () => {
+    entered();
+    await waiting;
+  };
+  const opening = http(actor, `leads/${leadId}/iframe`).then(response => response);
+  await started;
+  const blocking = adminRequest(`users/${actor}/block`).then(response => response);
+  try {
+    const deadline = Date.now() + 5000;
+    while (!(await prisma.user.findUniqueOrThrow({ where: { id: actor } })).deletedAt && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, true);
+    assert.deepEqual(revocations, []);
+  } finally {
+    release();
+  }
+  const denied = await opening;
+  assert.ok([403, 409].includes(denied.status));
+  assert.equal("url" in denied.body, false);
+  assert.equal((await blocking).status, 200);
+  assert.deepEqual(revocations, [`oxus-${actor}-1`]);
+});
+
+test("OFF preserves pending revocation without provider calls; a later explicit open reconciles before granting", async () => {
+  const { actor, leadId } = await lifecycleFixture();
+  enabled = false;
+  await adminRequest(`users/${actor}/block`).expect(200);
+  assert.deepEqual(revocations, []);
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, true);
+  await adminRequest(`users/${actor}/unblock`).expect(200);
+  await http(actor, `leads/${leadId}/iframe`).expect(503);
+  enabled = true;
+  await http(actor, `leads/${leadId}/iframe`).expect(200);
+  assert.deepEqual(revocations, [`oxus-${actor}-1`]);
+  assert.equal(calls.at(-1)!.payload.user.id, `oxus-${actor}-2`);
+});
+
+test("changing a user's role retires Wazzup access; editing a name does not rotate it", async () => {
+  const { actor } = await lifecycleFixture();
+  await adminRequest(`users/${actor}`).send({ firstname: "Renamed" }).expect(200);
+  assert.deepEqual(revocations, []);
+  const expertRole = await prisma.role.findUniqueOrThrow({ where: { code: "EXPERT" } });
+  await adminRequest(`users/${actor}`).send({ roleId: expertRole.id }).expect(200);
+  assert.deepEqual(revocations, [`oxus-${actor}-1`]);
+  await http(actor).expect(403);
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).generation, 2);
+});
+
+test("removing a role's Wazzup permission retires member sessions atomically and retrying does not lose pending IDs", async () => {
+  const { actor } = await lifecycleFixture();
+  const role = await prisma.role.findUniqueOrThrow({ where: { code: "SALES_MANAGER" }, include: { permissions: true } });
+  const repository = new RoleRepository(prisma, app.get(WazzupAccessService));
+  try {
+    revokeFailure = true;
+    await repository.update(role.id, { permissionIds: [] });
+    await http(actor).expect(403);
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).generation, 2);
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, true);
+    revokeFailure = false;
+    await repository.update(role.id, { permissionIds: [] });
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).generation, 2);
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, false);
+  } finally {
+    await repository.update(role.id, { permissionIds: role.permissions.map(p => p.id) });
+  }
+});
+
+test("soft deleting a role retires access of its members", async () => {
+  const { actor } = await lifecycleFixture();
+  const role = await prisma.role.findUniqueOrThrow({ where: { code: "SALES_MANAGER" } });
+  try {
+    await new RoleRepository(prisma, app.get(WazzupAccessService)).softDeleteMany([role.id]);
+    await http(actor).expect(403);
+    assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).revocationPending, false);
+    assert.ok(revocations.includes(`oxus-${actor}-1`));
+  } finally {
+    await prisma.role.update({ where: { id: role.id }, data: { deletedAt: null } });
+  }
+});
+
+test("a stale same-role request still retires access when a concurrent writer changed the actual role", async () => {
+  const { actor } = await lifecycleFixture();
+  const salesRole = await prisma.role.findUniqueOrThrow({ where: { code: "SALES_MANAGER" } });
+  const expertRole = await prisma.role.findUniqueOrThrow({ where: { code: "EXPERT" } });
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>(resolve => {
+    entered = resolve;
+  });
+  const barrier = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const concurrent = prisma.$transaction(async tx => {
+    await tx.user.update({ where: { id: actor }, data: { roleId: expertRole.id } });
+    entered();
+    await barrier;
+  });
+  await started;
+  const update = adminRequest(`users/${actor}`)
+    .send({ roleId: salesRole.id })
+    .then(response => response);
+  try {
+    const deadline = Date.now() + 3000;
+    let waiting = false;
+    while (Date.now() < deadline) {
+      const rows = await prisma.$queryRaw<
+        { waiting: boolean }[]
+      >`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%User%') AS waiting`;
+      waiting = rows[0].waiting;
+      if (waiting) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(waiting, true, "request must reach the contended user row before the competing transaction commits");
+  } finally {
+    release();
+  }
+  await concurrent;
+  assert.equal((await update).status, 200);
+  assert.deepEqual(revocations, [`oxus-${actor}-1`]);
+  assert.equal((await prisma.wazzupAccess.findUniqueOrThrow({ where: { userId: actor } })).generation, 2);
+  assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: actor } })).roleId, salesRole.id);
 });
